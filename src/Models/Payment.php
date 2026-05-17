@@ -10,9 +10,16 @@ class Payment extends Model
     protected $guarded = [];
 
     protected $casts = [
-        'amount'  => 'integer',
-        'meta'    => 'array',
-        'paid_at' => 'datetime',
+        'amount'          => 'integer',
+        'subtotal'        => 'integer',
+        'tax'             => 'integer',
+        'fee'             => 'integer',
+        'refunded_amount' => 'integer',
+        'livemode'        => 'boolean',
+        'meta'            => 'array',
+        'paid_at'         => 'datetime',
+        'period_start'    => 'datetime',
+        'period_end'      => 'datetime',
     ];
 
     public function getTable()

@@ -42,7 +42,7 @@ class BackfillPaymentsCommand extends Command
         $params = [
             'status' => 'paid',
             'limit'  => 100,
-            'expand' => ['data.payments'],
+            'expand' => ['data.payments', 'data.total_taxes'],
         ];
 
         if ($since) {

@@ -38,7 +38,7 @@ trait ResolvesPaymentData
                 'customer_email'     => $invoice['customer_email'] ?? null,
                 'amount'             => $invoice['amount_paid'] ?? 0,
                 'subtotal'           => $invoice['subtotal'] ?? null,
-                'tax'                => $invoice['tax'] ?? null,
+                'tax'                => $this->resolveInvoiceTax($invoice),
                 'fee'                => $fee,
                 'currency'           => $invoice['currency'] ?? 'eur',
                 'status'             => 'succeeded',
@@ -96,7 +96,7 @@ trait ResolvesPaymentData
                 'meta'               => [
                     'description' => $pi['description'] ?? null,
                 ],
-            ], $this->resolveBillable($invoice['customer'] ?? null) ?? [])
+            ], $this->resolveBillable($pi['customer'] ?? null) ?? [])
         );
     }
 
@@ -176,5 +176,30 @@ trait ResolvesPaymentData
             'billable_type' => $billable->getMorphClass(),
             'billable_id'   => $billable->getKey(),
         ];
+    }
+
+    /**
+     * Resolve the total tax amount (cents) from an invoice, across API
+     * versions. Basil (Cashier 16) moved tax off the top-level `tax`
+     * field into an aggregated `total_taxes` array. Pre-Basil exposed a
+     * flat `tax` integer.
+     */
+    protected function resolveInvoiceTax(array $invoice): ?int
+    {
+        // Basil: total_taxes is an array of tax breakdown objects.
+        if (! empty($invoice['total_taxes']) && is_array($invoice['total_taxes'])) {
+            $sum = 0;
+            foreach ($invoice['total_taxes'] as $t) {
+                $sum += $t['amount'] ?? 0;
+            }
+            return $sum;
+        }
+
+        // Pre-Basil fallback: flat tax field.
+        if (isset($invoice['tax']) && is_numeric($invoice['tax'])) {
+            return (int) $invoice['tax'];
+        }
+
+        return null;
     }
 }
