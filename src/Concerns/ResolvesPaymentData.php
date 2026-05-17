@@ -69,8 +69,13 @@ trait ResolvesPaymentData
             return;
         }
 
-        // A PaymentIntent's charge lives under latest_charge (string id)
-        // or in the legacy charges.data[0] shape.
+        // Skip payment intents that belong to an invoice: the invoice is the
+        // canonical record (it carries the tax breakdown) and is tracked
+        // separately. Recording both would double-count subscription revenue.
+        if (! empty($pi['invoice'])) {
+            return;
+        }
+
         $chargeId = $pi['latest_charge']
             ?? ($pi['charges']['data'][0]['id'] ?? null);
 
@@ -83,7 +88,7 @@ trait ResolvesPaymentData
                 'stripe_customer_id' => $pi['customer'] ?? null,
                 'customer_email'     => $pi['receipt_email'] ?? null,
                 'amount'             => $pi['amount_received'] ?? $pi['amount'] ?? 0,
-                'subtotal'           => null, // PaymentIntents carry no tax breakdown
+                'subtotal'           => null,
                 'tax'                => null,
                 'fee'                => $fee,
                 'currency'           => $pi['currency'] ?? 'eur',
