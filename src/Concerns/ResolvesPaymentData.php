@@ -32,7 +32,7 @@ trait ResolvesPaymentData
 
         ($this->paymentModel())::updateOrCreate(
             ['stripe_id' => $invoice['id']],
-            [
+            array_merge([
                 'type'               => 'invoice',
                 'stripe_customer_id' => $invoice['customer'] ?? null,
                 'customer_email'     => $invoice['customer_email'] ?? null,
@@ -56,7 +56,7 @@ trait ResolvesPaymentData
                     'subscription'   => $invoice['subscription'] ?? null,
                     'hosted_invoice' => $invoice['hosted_invoice_url'] ?? null,
                 ],
-            ]
+            ], $this->resolveBillable($invoice['customer'] ?? null) ?? [])
         );
     }
 
@@ -83,7 +83,7 @@ trait ResolvesPaymentData
 
         ($this->paymentModel())::updateOrCreate(
             ['stripe_id' => $pi['id']],
-            [
+            array_merge([
                 'type'               => 'payment_intent',
                 'stripe_customer_id' => $pi['customer'] ?? null,
                 'customer_email'     => $pi['receipt_email'] ?? null,
@@ -99,7 +99,7 @@ trait ResolvesPaymentData
                 'meta'               => [
                     'description' => $pi['description'] ?? null,
                 ],
-            ]
+            ], $this->resolveBillable($invoice['customer'] ?? null) ?? [])
         );
     }
 
@@ -133,5 +133,23 @@ trait ResolvesPaymentData
     protected function tracksPaymentIntents(): bool
     {
         return in_array(config('cashier-tracker.source'), ['payment_intents', 'both'], true);
+    }
+
+    protected function resolveBillable(?string $stripeCustomerId): ?array
+    {
+        if (! $stripeCustomerId) {
+            return null;
+        }
+
+        $billable = \Laravel\Cashier\Cashier::findBillable($stripeCustomerId);
+
+        if (! $billable) {
+            return null;
+        }
+
+        return [
+            'billable_type' => $billable->getMorphClass(),
+            'billable_id'   => $billable->getKey(),
+        ];
     }
 }
