@@ -39,7 +39,11 @@ class BackfillPaymentsCommand extends Command
     private function backfillInvoices(StripeClient $stripe, ?int $since): void
     {
         $this->info('Backfilling invoices…');
-        $params = ['status' => 'paid', 'limit' => 100];
+        $params = [
+            'status' => 'paid',
+            'limit'  => 100,
+            'expand' => ['data.payments'],
+        ];
 
         if ($since) {
             $params['created'] = ['gte' => $since];

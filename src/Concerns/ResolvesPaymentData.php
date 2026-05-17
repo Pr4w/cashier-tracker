@@ -27,7 +27,7 @@ trait ResolvesPaymentData
 
         $fee = $this->resolveFee(
             $stripe,
-            $invoice['charge'] ?? null
+            $this->resolveInvoicePaymentIntentId($invoice)
         );
 
         ($this->paymentModel())::updateOrCreate(
@@ -76,10 +76,7 @@ trait ResolvesPaymentData
             return;
         }
 
-        $chargeId = $pi['latest_charge']
-            ?? ($pi['charges']['data'][0]['id'] ?? null);
-
-        $fee = $this->resolveFee($stripe, $chargeId);
+        $fee = $this->resolveFee($stripe, $pi['id'] ?? null);
 
         ($this->paymentModel())::updateOrCreate(
             ['stripe_id' => $pi['id']],
@@ -104,25 +101,53 @@ trait ResolvesPaymentData
     }
 
     /**
-     * Resolve Stripe fees (in cents) from a charge's balance transaction.
+     * Resolve Stripe fees (in cents) from a PaymentIntent's charge.
      * Best-effort: returns null on any miss instead of throwing, so a
-     * backfill is never aborted by a single unresolvable charge.
+     * backfill is never aborted by a single unresolvable payment.
      */
-    protected function resolveFee(?StripeClient $stripe, ?string $chargeId): ?int
+    protected function resolveFee(?StripeClient $stripe, ?string $paymentIntentId): ?int
     {
-        if (! $stripe || ! $chargeId) {
+        if (! $stripe || ! $paymentIntentId) {
             return null;
         }
 
         try {
-            $charge = $stripe->charges->retrieve($chargeId, [
-                'expand' => ['balance_transaction'],
+            $pi = $stripe->paymentIntents->retrieve($paymentIntentId, [
+                'expand' => ['latest_charge.balance_transaction'],
             ]);
 
-            return $charge->balance_transaction->fee ?? null;
+            return $pi->latest_charge->balance_transaction->fee ?? null;
         } catch (\Throwable $e) {
             return null;
         }
+    }
+
+    /**
+     * Extract the PaymentIntent id that settled an invoice, across API
+     * versions. Recent Stripe API (Cashier 16) exposes it via the
+     * invoice.payments[].payment.payment_intent path; older versions
+     * exposed invoice.payment_intent or invoice.charge directly.
+     */
+    protected function resolveInvoicePaymentIntentId(array $invoice): ?string
+    {
+        // Recent API: payments collection on the invoice.
+        $payment = $invoice['payments']['data'][0] ?? null;
+        if ($payment) {
+            $pi = $payment['payment']['payment_intent'] ?? null;
+            if (is_string($pi)) {
+                return $pi;
+            }
+            if (is_array($pi) && isset($pi['id'])) {
+                return $pi['id'];
+            }
+        }
+
+        // Older API fallbacks.
+        if (! empty($invoice['payment_intent']) && is_string($invoice['payment_intent'])) {
+            return $invoice['payment_intent'];
+        }
+
+        return null;
     }
 
     protected function tracksInvoices(): bool
