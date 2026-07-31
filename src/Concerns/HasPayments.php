@@ -15,8 +15,8 @@ trait HasPayments
     }
 
     /**
-     * Total réellement encaissé pour ce client, en centimes,
-     * hors paiements de test.
+     * Total actually collected for this customer, in cents,
+     * excluding test payments.
      */
     public function totalPaid(): int
     {
@@ -26,13 +26,13 @@ trait HasPayments
     }
 
     /**
-     * Net réel : encaissé - frais Stripe - remboursé.
+     * True net: collected - Stripe fees - refunded.
      *
-     * Les soustractions sont faites en dehors des SUM() : les colonnes de
-     * montants sont unsigned, et MySQL lève une erreur "out of range" sur
-     * une soustraction d'entiers unsigned dont le résultat est négatif
-     * (cas d'un remboursement total, frais compris). SUM() renvoie un
-     * DECIMAL signé, l'arithmétique est donc sûre à ce niveau.
+     * The subtractions are kept outside the SUM() calls: the amount columns
+     * are unsigned, and MySQL raises an "out of range" error on unsigned
+     * integer subtraction that yields a negative result (the case of a full
+     * refund once fees are counted). SUM() returns a signed DECIMAL, so the
+     * arithmetic is safe at that level.
      */
     public function netPaid(): int
     {

@@ -46,7 +46,7 @@ class Payment extends Model
     }
 
     /**
-     * Net réel : encaissé - frais Stripe - remboursé.
+     * True net: collected - Stripe fees - refunded.
      */
     public function getNetAmountAttribute(): int
     {
@@ -54,7 +54,7 @@ class Payment extends Model
     }
 
     /**
-     * Exclut les paiements de test (Stripe CLI, triggers).
+     * Excludes test payments (Stripe CLI, triggers).
      */
     public function scopeLive($query)
     {

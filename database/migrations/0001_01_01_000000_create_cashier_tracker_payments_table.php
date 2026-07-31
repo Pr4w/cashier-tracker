@@ -16,11 +16,11 @@ return new class extends Migration
             $table->string('stripe_customer_id')->nullable()->index();
             $table->string('customer_email')->nullable();
 
-            // Montants, toujours en plus petite unité (centimes).
-            $table->unsignedBigInteger('amount');          // amount_paid (TTC encaissé)
-            $table->unsignedBigInteger('subtotal')->nullable();  // HT
-            $table->unsignedBigInteger('tax')->nullable();       // TVA
-            $table->unsignedBigInteger('fee')->nullable();       // frais Stripe
+            // Amounts, always in the smallest currency unit (cents).
+            $table->unsignedBigInteger('amount');                // amount_paid (gross collected, tax included)
+            $table->unsignedBigInteger('subtotal')->nullable();  // net of tax
+            $table->unsignedBigInteger('tax')->nullable();       // tax (VAT)
+            $table->unsignedBigInteger('fee')->nullable();       // Stripe fees
             $table->unsignedBigInteger('refunded_amount')->default(0);
             $table->string('currency', 3);
 
