@@ -16,6 +16,9 @@
             "Pr4w\\CashierTracker\\": "src/"
         }
     },
+    "scripts": {
+        "test": "vendor/bin/phpunit"
+    },
     "extra": {
         "laravel": {
             "providers": [
@@ -24,5 +27,14 @@
         }
     },
     "minimum-stability": "stable",
-    "prefer-stable": true
+    "prefer-stable": true,
+    "require-dev": {
+        "orchestra/testbench": "^9.0|^10.0",
+        "phpunit/phpunit": "^10.5|^11.0"
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Pr4w\\CashierTracker\\Tests\\": "tests/"
+        }
+    }
 }

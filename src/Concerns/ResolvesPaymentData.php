@@ -24,7 +24,9 @@ trait ResolvesPaymentData
      */
     protected function timestampToDate(int|string $timestamp): Carbon
     {
-        return Carbon::createFromTimestamp($timestamp, config('app.timezone', 'UTC'));
+        // `?:` rather than a config() default: the key is normally present,
+        // and a present-but-null value would skip the default entirely.
+        return Carbon::createFromTimestamp($timestamp, config('app.timezone') ?: 'UTC');
     }
 
     /**

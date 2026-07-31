@@ -203,6 +203,25 @@ Stripe dashboard over the same period. Common sources of discrepancy:
 mixed currencies (no conversion) or invoices that are not `paid`
 (skipped deliberately).
 
+## Tests
+
+```bash
+composer install
+composer test
+```
+
+Testbench boots a real Laravel app with both service providers and runs
+against SQLite in memory; no Stripe credentials and no network access are
+needed. Coverage is concentrated on the parts that have actually broken:
+payload shapes across Stripe API versions, timestamp timezone resolution,
+refund idempotency under webhook redelivery, and the billable aggregates.
+
+One caveat is recorded in `BillableMetricsTest`: `netPaid()` keeps its
+subtractions outside `SUM()` because MySQL rejects unsigned integer
+subtraction that goes negative. SQLite has no unsigned integers and
+accepts either form, so a green suite does not prove that constraint
+holds — don't fold the subtraction back in.
+
 ## Known limitations
 
 -   No currency conversion: a gross total adds up amounts across all
