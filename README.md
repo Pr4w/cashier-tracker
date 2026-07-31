@@ -9,6 +9,7 @@ through the Stripe dashboard.
 -   Imports history through a backfill command (read-only on the Stripe
     side, replayable without creating duplicates).
 -   Resolves the net-of-tax amount, tax, Stripe fees and the true net.
+-   Tracks refunds, so reported revenue reflects money actually kept.
 -   Attaches each payment to the billable model (User) through an
     optional trait.
 
@@ -68,11 +69,11 @@ php artisan cashier-tracker:backfill --since=2026-01-01
 php artisan cashier-tracker:backfill
 ```
 
-The backfill resolves Stripe fees through the path
+The backfill resolves Stripe fees and refunds through the path
 invoice → payments → payment_intent → charge → balance_transaction
-(recent Stripe API). One API call per payment, so it is slow over a
-large history. Best-effort: an unresolved fee leaves `fee` at `null`
-without interrupting the backfill.
+(recent Stripe API); both come out of the same call. One API call per
+payment, so it is slow over a large history. Best-effort: an unresolved
+charge leaves `fee` at `null` without interrupting the backfill.
 
 Idempotent on `stripe_id`: replaying the backfill updates existing rows
 instead of creating duplicates. Useful for enriching retroactively
@@ -108,6 +109,9 @@ the trait fills in history retroactively.
 
 `Pr4w\CashierTracker\Models\Payment`
 
+-   `stripe_payment_intent_id`: the payment intent behind the row, on both
+    invoice and payment-intent rows. Join key for refunds.
+-   `status`: `succeeded`, `partially_refunded`, or `refunded`.
 -   `scopeLive()`: excludes test payments (`livemode = false`).
 -   `scopePaidBetween($from, $to)`: filters on `paid_at`.
 -   `net_amount` (accessor, not stored): `amount - fee - refunded_amount`.
@@ -131,11 +135,59 @@ negative result.
 
 The listener is auto-registered on
 `Laravel\Cashier\Events\WebhookReceived`; there is nothing to wire up.
-It only fires if the Cashier webhook endpoint is configured on the
-Stripe side and listens to at least `invoice.payment_succeeded` (and
-`payment_intent.succeeded` if `source` includes one-off sales). It is
-wrapped in a try/catch: a tracking failure never interrupts webhook
-processing.
+It is wrapped in a try/catch: a tracking failure never interrupts
+webhook processing.
+
+Events consumed, which the Stripe endpoint must be subscribed to:
+
+| Event | Needed for |
+| --- | --- |
+| `invoice.payment_succeeded` | subscription payments (`source` includes `invoices`) |
+| `payment_intent.succeeded` | one-off sales (`source` includes `payment_intents`) |
+| `charge.refunded` | refunds, for either source |
+
+## Refunds
+
+`charge.refunded` updates the matching row's `refunded_amount` and
+`status`. Nothing else needs configuring, but two details are worth
+knowing.
+
+**The join key.** A refund arrives on a charge, while rows are keyed by
+invoice id or payment intent id. `Charge.invoice` was removed in the
+Basil API (Cashier 16) whereas `Charge.payment_intent` survives across
+versions, so the payment intent is stored on every row
+(`stripe_payment_intent_id`) and used as the join. Existing installs
+need the second migration for this column:
+
+```bash
+php artisan migrate
+```
+
+**Idempotency.** `amount_refunded` on the charge is cumulative across
+every refund, so it is assigned rather than incremented — a redelivered
+webhook re-applies the same total instead of double-counting. For the
+same reason, a redelivered *payment* webhook does not reset a refund:
+refund fields are only written when the refunded total was actually
+resolved.
+
+A refund for a payment that is not tracked (tracking enabled after the
+fact) is logged at debug level and ignored; the backfill picks it up.
+
+`status` follows from the amounts:
+
+| `status` | Condition |
+| --- | --- |
+| `succeeded` | no refund |
+| `partially_refunded` | `0 < refunded_amount < amount` |
+| `refunded` | `refunded_amount >= amount` |
+
+Backfilling also fills in refunds, at no extra API cost: the refunded
+total comes from the same charge retrieval already used for the fee.
+Replaying the backfill therefore corrects refund history retroactively.
+
+Not covered: disputes and chargebacks (`charge.dispute.*`), which
+withdraw funds but are not refunds, and refund reversals (an async
+refund that later fails).
 
 ## Verification
 
@@ -160,7 +212,11 @@ mixed currencies (no conversion) or invoices that are not `paid`
     app running a non-UTC timezone that has already moved to Carbon 3,
     rows written before this version were interpreted as UTC; replaying
     the backfill realigns the history.
--   Fees are resolved best-effort: `fee` may be `null` when the balance
-    transaction cannot be retrieved.
+-   Fees are only resolved during a backfill. The webhook path passes no
+    Stripe client, by design, to keep webhook handling fast and resilient,
+    so rows recorded live carry `fee = null` until a backfill fills them
+    in. Refunds are not affected: they are tracked live.
+-   Even during a backfill, fees are best-effort: `fee` stays `null` when
+    the balance transaction cannot be retrieved.
 -   `net_amount` is an accessor: usable on a loaded model, but not in a
     `where()`. Aggregates go through the columns (see `netPaid()`).

@@ -40,38 +40,40 @@ trait ResolvesPaymentData
             ?? $invoice['created']
             ?? now()->timestamp;
 
-        $fee = $this->resolveFee(
-            $stripe,
-            $this->resolveInvoicePaymentIntentId($invoice)
-        );
+        $paymentIntentId = $this->resolveInvoicePaymentIntentId($invoice);
+        $charge          = $this->resolveChargeData($stripe, $paymentIntentId);
+        $amount          = (int) ($invoice['amount_paid'] ?? 0);
 
         ($this->paymentModel())::updateOrCreate(
             ['stripe_id' => $invoice['id']],
             array_merge([
-                'type'               => 'invoice',
-                'stripe_customer_id' => $invoice['customer'] ?? null,
-                'customer_email'     => $invoice['customer_email'] ?? null,
-                'amount'             => $invoice['amount_paid'] ?? 0,
-                'subtotal'           => $invoice['subtotal'] ?? null,
-                'tax'                => $this->resolveInvoiceTax($invoice),
-                'fee'                => $fee,
-                'currency'           => $invoice['currency'] ?? 'eur',
-                'status'             => 'succeeded',
-                'billing_reason'     => $invoice['billing_reason'] ?? null,
-                'livemode'           => $invoice['livemode'] ?? true,
-                'period_start'       => isset($invoice['period_start'])
+                'type'                     => 'invoice',
+                'stripe_customer_id'       => $invoice['customer'] ?? null,
+                'stripe_payment_intent_id' => $paymentIntentId,
+                'customer_email'           => $invoice['customer_email'] ?? null,
+                'amount'                   => $amount,
+                'subtotal'                 => $invoice['subtotal'] ?? null,
+                'tax'                      => $this->resolveInvoiceTax($invoice),
+                'fee'                      => $charge['fee'],
+                'currency'                 => $invoice['currency'] ?? 'eur',
+                'billing_reason'           => $invoice['billing_reason'] ?? null,
+                'livemode'                 => $invoice['livemode'] ?? true,
+                'period_start'             => isset($invoice['period_start'])
                     ? $this->timestampToDate($invoice['period_start'])
                     : null,
-                'period_end'         => isset($invoice['period_end'])
+                'period_end'               => isset($invoice['period_end'])
                     ? $this->timestampToDate($invoice['period_end'])
                     : null,
-                'paid_at'            => $this->timestampToDate($paidAt),
-                'meta'               => [
+                'paid_at'                  => $this->timestampToDate($paidAt),
+                'meta'                     => [
                     'number'         => $invoice['number'] ?? null,
                     'subscription'   => $this->resolveInvoiceSubscriptionId($invoice),
                     'hosted_invoice' => $invoice['hosted_invoice_url'] ?? null,
                 ],
-            ], $this->resolveBillable($invoice['customer'] ?? null) ?? [])
+            ],
+                $this->refundAttributes($charge['refunded'], $amount),
+                $this->resolveBillable($invoice['customer'] ?? null) ?? []
+            )
         );
     }
 
@@ -91,39 +93,50 @@ trait ResolvesPaymentData
             return;
         }
 
-        $fee = $this->resolveFee($stripe, $pi['id'] ?? null);
+        $charge = $this->resolveChargeData($stripe, $pi['id'] ?? null);
+        $amount = (int) ($pi['amount_received'] ?? $pi['amount'] ?? 0);
 
         ($this->paymentModel())::updateOrCreate(
             ['stripe_id' => $pi['id']],
             array_merge([
-                'type'               => 'payment_intent',
-                'stripe_customer_id' => $pi['customer'] ?? null,
-                'customer_email'     => $pi['receipt_email'] ?? null,
-                'amount'             => $pi['amount_received'] ?? $pi['amount'] ?? 0,
-                'subtotal'           => null,
-                'tax'                => null,
-                'fee'                => $fee,
-                'currency'           => $pi['currency'] ?? 'eur',
-                'status'             => 'succeeded',
-                'billing_reason'     => null,
-                'livemode'           => $pi['livemode'] ?? true,
-                'paid_at'            => $this->timestampToDate($pi['created'] ?? now()->timestamp),
-                'meta'               => [
+                'type'                     => 'payment_intent',
+                'stripe_customer_id'       => $pi['customer'] ?? null,
+                'stripe_payment_intent_id' => $pi['id'] ?? null,
+                'customer_email'           => $pi['receipt_email'] ?? null,
+                'amount'                   => $amount,
+                'subtotal'                 => null,
+                'tax'                      => null,
+                'fee'                      => $charge['fee'],
+                'currency'                 => $pi['currency'] ?? 'eur',
+                'billing_reason'           => null,
+                'livemode'                 => $pi['livemode'] ?? true,
+                'paid_at'                  => $this->timestampToDate($pi['created'] ?? now()->timestamp),
+                'meta'                     => [
                     'description' => $pi['description'] ?? null,
                 ],
-            ], $this->resolveBillable($pi['customer'] ?? null) ?? [])
+            ],
+                $this->refundAttributes($charge['refunded'], $amount),
+                $this->resolveBillable($pi['customer'] ?? null) ?? []
+            )
         );
     }
 
     /**
-     * Resolve Stripe fees (in cents) from a PaymentIntent's charge.
-     * Best-effort: returns null on any miss instead of throwing, so a
+     * Resolve Stripe fees and the refunded total (both in cents) from a
+     * PaymentIntent's charge. Both come out of the same retrieve, so
+     * tracking refunds during a backfill costs no extra API call.
+     *
+     * Best-effort: returns nulls on any miss instead of throwing, so a
      * backfill is never aborted by a single unresolvable payment.
+     *
+     * @return array{fee: ?int, refunded: ?int}
      */
-    protected function resolveFee(?StripeClient $stripe, ?string $paymentIntentId): ?int
+    protected function resolveChargeData(?StripeClient $stripe, ?string $paymentIntentId): array
     {
+        $miss = ['fee' => null, 'refunded' => null];
+
         if (! $stripe || ! $paymentIntentId) {
-            return null;
+            return $miss;
         }
 
         try {
@@ -131,10 +144,91 @@ trait ResolvesPaymentData
                 'expand' => ['latest_charge.balance_transaction'],
             ]);
 
-            return $pi->latest_charge->balance_transaction->fee ?? null;
+            return [
+                'fee'      => $pi->latest_charge->balance_transaction->fee ?? null,
+                'refunded' => $pi->latest_charge->amount_refunded ?? null,
+            ];
         } catch (\Throwable $e) {
-            return null;
+            return $miss;
         }
+    }
+
+    /**
+     * Attributes derived from a refund, omitted entirely when the refunded
+     * total could not be resolved (the webhook path, which passes no Stripe
+     * client). Writing them unconditionally would let a redelivered payment
+     * webhook reset a refund already recorded by the charge.refunded
+     * listener; omitting the keys leaves the stored values untouched and
+     * lets the column defaults apply on insert.
+     */
+    protected function refundAttributes(?int $refunded, int $amount): array
+    {
+        if ($refunded === null) {
+            return [];
+        }
+
+        return [
+            'refunded_amount' => $refunded,
+            'status'          => $this->resolveStatus($amount, $refunded),
+        ];
+    }
+
+    protected function resolveStatus(int $amount, int $refunded): string
+    {
+        if ($refunded <= 0) {
+            return 'succeeded';
+        }
+
+        return $refunded >= $amount ? 'refunded' : 'partially_refunded';
+    }
+
+    /**
+     * Apply a refund to an already-tracked payment. Returns false when no
+     * tracked row matches, which is not an error: tracking may have been
+     * enabled after the payment, and the backfill will pick it up.
+     *
+     * `amount_refunded` on the charge is cumulative across every refund, so
+     * it is assigned rather than incremented — a redelivered webhook then
+     * re-applies the same total instead of double-counting.
+     */
+    protected function recordRefund(array $charge): bool
+    {
+        $paymentIntentId = $this->resolveChargePaymentIntentId($charge);
+        $refunded        = $charge['amount_refunded'] ?? null;
+
+        if (! $paymentIntentId || $refunded === null) {
+            return false;
+        }
+
+        $payment = ($this->paymentModel())::query()
+            ->where('stripe_payment_intent_id', $paymentIntentId)
+            ->first();
+
+        if (! $payment) {
+            return false;
+        }
+
+        $payment->update([
+            'refunded_amount' => (int) $refunded,
+            'status'          => $this->resolveStatus((int) $payment->amount, (int) $refunded),
+        ]);
+
+        return true;
+    }
+
+    /**
+     * Extract the PaymentIntent id from a charge, tolerating both the
+     * id-only and the expanded-object shape.
+     */
+    protected function resolveChargePaymentIntentId(array $charge): ?string
+    {
+        $paymentIntent = $charge['payment_intent'] ?? null;
+
+        if (is_string($paymentIntent)) {
+            return $paymentIntent;
+        }
+
+        return $paymentIntent['id'] ?? null;
     }
 
     /**

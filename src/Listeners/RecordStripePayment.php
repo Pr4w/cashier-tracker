@@ -15,14 +15,31 @@ class RecordStripePayment
         try {
             $payload = $event->payload;
             $type    = $payload['type'] ?? null;
+            $object  = $payload['data']['object'] ?? null;
+
+            if (! is_array($object)) {
+                return;
+            }
 
             if ($type === 'invoice.payment_succeeded' && $this->tracksInvoices()) {
-                $this->storeInvoice($payload['data']['object']);
+                $this->storeInvoice($object);
                 return;
             }
 
             if ($type === 'payment_intent.succeeded' && $this->tracksPaymentIntents()) {
-                $this->storePaymentIntent($payload['data']['object']);
+                $this->storePaymentIntent($object);
+                return;
+            }
+
+            // Refunds apply to whichever source produced the row, so this is
+            // not gated on the tracked-source config.
+            if ($type === 'charge.refunded') {
+                if (! $this->recordRefund($object)) {
+                    Log::debug('[cashier-tracker] Refund did not match a tracked payment', [
+                        'charge' => $object['id'] ?? null,
+                    ]);
+                }
+
                 return;
             }
         } catch (\Throwable $e) {
