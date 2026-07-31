@@ -112,8 +112,19 @@ l'ajout du trait remplit l'historique rétroactivement.
 -   `decimal_amount` (accesseur) : montant en unité principale.
 
 Montants toujours stockés en centimes. `net_amount` n'est pas une
-colonne : c'est une dérivée calculée, non sommable en SQL (utiliser
-`->get()->sum(fn ($p) => $p->net_amount)`).
+colonne : c'est un accesseur calculé, donc non filtrable dans un
+`where()`. Pour l'agréger, sommer les colonnes en SQL plutôt que
+d'hydrater la collection :
+
+```php
+Payment::live()->selectRaw(
+    'COALESCE(SUM(amount), 0) - COALESCE(SUM(fee), 0) - COALESCE(SUM(refunded_amount), 0) as aggregate'
+)->value('aggregate');
+```
+
+Les soustractions restent en dehors des `SUM()` : les colonnes de
+montants sont unsigned, et MySQL rejette une soustraction d'entiers
+unsigned au résultat négatif.
 
 ## Webhook (paiements futurs)
 
@@ -141,6 +152,13 @@ conversion) ou invoices non `paid` (ignorées volontairement).
 
 -   Pas de conversion de devises : un total brut additionne les montants
     toutes devises confondues.
+-   Les dates Stripe (`paid_at`, `period_start`, `period_end`) sont
+    résolues dans `app.timezone`, comme les `created_at` d'Eloquent. Sur
+    une app en timezone non-UTC déjà passée à Carbon 3, les lignes
+    écrites avant cette version ont été interprétées en UTC : rejouer le
+    backfill réaligne l'historique.
 -   Frais résolus en best-effort : `fee` peut être `null` si la balance
     transaction n'est pas récupérable.
--   `net_amount` calculé en PHP, pas en SQL (non pertinent en SQL).
+-   `net_amount` est un accesseur : utilisable sur un modèle chargé, mais
+    pas dans un `where()`. Les agrégats passent par les colonnes (cf.
+    `netPaid()`).

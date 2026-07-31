@@ -13,6 +13,21 @@ trait ResolvesPaymentData
     }
 
     /**
+     * Convert a Stripe Unix timestamp to a date.
+     *
+     * The timezone is pinned explicitly: Carbon 2 resolved bare timestamps
+     * in the app timezone while Carbon 3 resolves them in UTC, and Laravel
+     * 11 ships either one. Without this, the same payload lands at a
+     * different wall-clock time depending on the installed Carbon. The app
+     * timezone is used so `paid_at` stays comparable to the `created_at`
+     * Eloquent writes alongside it.
+     */
+    protected function timestampToDate(int|string $timestamp): Carbon
+    {
+        return Carbon::createFromTimestamp($timestamp, config('app.timezone', 'UTC'));
+    }
+
+    /**
      * Persist a Stripe invoice (array shape from webhook OR SDK object cast to array).
      *
      * $stripe is optional: when provided (backfill), Stripe fees are resolved
@@ -45,15 +60,15 @@ trait ResolvesPaymentData
                 'billing_reason'     => $invoice['billing_reason'] ?? null,
                 'livemode'           => $invoice['livemode'] ?? true,
                 'period_start'       => isset($invoice['period_start'])
-                    ? Carbon::createFromTimestamp($invoice['period_start'])
+                    ? $this->timestampToDate($invoice['period_start'])
                     : null,
                 'period_end'         => isset($invoice['period_end'])
-                    ? Carbon::createFromTimestamp($invoice['period_end'])
+                    ? $this->timestampToDate($invoice['period_end'])
                     : null,
-                'paid_at'            => Carbon::createFromTimestamp($paidAt),
+                'paid_at'            => $this->timestampToDate($paidAt),
                 'meta'               => [
                     'number'         => $invoice['number'] ?? null,
-                    'subscription'   => $invoice['subscription'] ?? null,
+                    'subscription'   => $this->resolveInvoiceSubscriptionId($invoice),
                     'hosted_invoice' => $invoice['hosted_invoice_url'] ?? null,
                 ],
             ], $this->resolveBillable($invoice['customer'] ?? null) ?? [])
@@ -92,7 +107,7 @@ trait ResolvesPaymentData
                 'status'             => 'succeeded',
                 'billing_reason'     => null,
                 'livemode'           => $pi['livemode'] ?? true,
-                'paid_at'            => Carbon::createFromTimestamp($pi['created'] ?? now()->timestamp),
+                'paid_at'            => $this->timestampToDate($pi['created'] ?? now()->timestamp),
                 'meta'               => [
                     'description' => $pi['description'] ?? null,
                 ],
@@ -201,5 +216,26 @@ trait ResolvesPaymentData
         }
 
         return null;
+    }
+
+    /**
+     * Resolve the subscription id an invoice belongs to, across API
+     * versions. Basil (Cashier 16) moved it off the top-level
+     * `subscription` field into `parent.subscription_details.subscription`.
+     * Handles both the id-only and the expanded-object shape.
+     */
+    protected function resolveInvoiceSubscriptionId(array $invoice): ?string
+    {
+        // Basil: nested under the invoice parent.
+        $subscription = $invoice['parent']['subscription_details']['subscription'] ?? null;
+
+        // Pre-Basil fallback: flat subscription field.
+        $subscription ??= $invoice['subscription'] ?? null;
+
+        if (is_string($subscription)) {
+            return $subscription;
+        }
+
+        return $subscription['id'] ?? null;
     }
 }

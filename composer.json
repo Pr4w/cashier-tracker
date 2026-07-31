@@ -1,11 +1,12 @@
 {
-    "name": "Pr4w/cashier-tracker",
+    "name": "pr4w/cashier-tracker",
     "description": "Tracks Laravel Cashier (Stripe) payments locally.",
     "type": "library",
     "license": "proprietary",
     "require": {
         "php": "^8.2",
         "laravel/cashier": "^15.0|^16.0",
+        "stripe/stripe-php": "^13.0|^16.2|^17.3",
         "illuminate/contracts": "^11.0|^12.0",
         "illuminate/database": "^11.0|^12.0",
         "illuminate/support": "^11.0|^12.0"

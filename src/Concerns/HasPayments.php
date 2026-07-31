@@ -27,13 +27,21 @@ trait HasPayments
 
     /**
      * Net réel : encaissé - frais Stripe - remboursé.
+     *
+     * Les soustractions sont faites en dehors des SUM() : les colonnes de
+     * montants sont unsigned, et MySQL lève une erreur "out of range" sur
+     * une soustraction d'entiers unsigned dont le résultat est négatif
+     * (cas d'un remboursement total, frais compris). SUM() renvoie un
+     * DECIMAL signé, l'arithmétique est donc sûre à ce niveau.
      */
     public function netPaid(): int
     {
         return (int) $this->trackedPayments()
             ->where('livemode', true)
-            ->get()
-            ->sum(fn ($p) => $p->net_amount);
+            ->selectRaw(
+                'COALESCE(SUM(amount), 0) - COALESCE(SUM(fee), 0) - COALESCE(SUM(refunded_amount), 0) as aggregate'
+            )
+            ->value('aggregate');
     }
 
     public function paidInvoicesCount(): int
