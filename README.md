@@ -13,7 +13,14 @@ through the Stripe dashboard.
 -   Attaches each payment to the billable model (User) through an
     optional trait.
 
-Compatibility: Laravel 11/12, Cashier 15/16, PHP 8.2+.
+Compatibility: Laravel 11/12/13, Cashier 15/16, PHP 8.2+. Laravel 13
+itself requires PHP 8.3+, so on PHP 8.2 Composer resolves to Laravel
+11/12.
+
+Note that every Laravel 11 release is currently flagged by unpatched
+security advisories, so Composer's default policy refuses to resolve it.
+The `^11.0` constraint is kept for existing lock files; new installs land
+on 12 or 13.
 
 ## Installation
 
@@ -212,7 +219,12 @@ composer test
 
 Testbench boots a real Laravel app with both service providers and runs
 against SQLite in memory; no Stripe credentials and no network access are
-needed. Coverage is concentrated on the parts that have actually broken:
+needed. To check the declared version range, resolve the ends explicitly:
+
+```bash
+composer update --prefer-lowest   # floor of the supported range
+composer update                   # newest Laravel / Cashier / PHPUnit
+``` Coverage is concentrated on the parts that have actually broken:
 payload shapes across Stripe API versions, timestamp timezone resolution,
 refund idempotency under webhook redelivery, and the billable aggregates.
 
