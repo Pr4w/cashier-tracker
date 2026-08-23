@@ -13,14 +13,11 @@ through the Stripe dashboard.
 -   Attaches each payment to the billable model (User) through an
     optional trait.
 
-Compatibility: Laravel 11/12/13, Cashier 15/16, PHP 8.2+. Laravel 13
-itself requires PHP 8.3+, so on PHP 8.2 Composer resolves to Laravel
-11/12.
+Compatibility: Laravel 12/13, Cashier 15/16, PHP 8.3+.
 
-Note that every Laravel 11 release is currently flagged by unpatched
-security advisories, so Composer's default policy refuses to resolve it.
-The `^11.0` constraint is kept for existing lock files; new installs land
-on 12 or 13.
+Laravel 11 support was dropped in 0.2.0: every 11.x release is flagged by
+unpatched security advisories, so Composer's default policy will not
+resolve it. Stay on 0.1.1 if you need it.
 
 ## Installation
 
@@ -39,7 +36,7 @@ in the host project's `composer.json`:
 Then:
 
 ```bash
-composer require pr4w/cashier-tracker:^0.1.0 -W
+composer require pr4w/cashier-tracker:^0.2.0 -W
 php artisan vendor:publish --tag=cashier-tracker-config
 php artisan migrate
 ```
