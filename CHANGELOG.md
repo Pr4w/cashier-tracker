@@ -3,6 +3,32 @@
 Notable changes per release. This package is pre-1.0, so the minor segment
 carries breaking changes: `^0.2.0` will not pick up `0.3.0`.
 
+## 0.5.1
+
+### Fixed
+
+-   **Every subscription payment was recorded twice** — once as an `invoice`
+    row, once as a `payment_intent` row — inflating revenue, net and distinct
+    customer counts on any total not filtered to `type = 'invoice'`.
+
+    The guard that skipped a payment intent belonging to an invoice tested
+    `PaymentIntent.invoice`, which the Basil API removed along with
+    `Charge.invoice`. The condition was permanently false, so the guard never
+    fired. Recognition now goes through the invoice row's
+    `stripe_payment_intent_id`, in both directions, since webhook order is
+    not guaranteed. The pre-Basil field is still honoured for Cashier 15.
+
+    **Replay the backfill to clear duplicates already in your table:**
+
+    ```bash
+    php artisan cashier-tracker:backfill
+    ```
+
+    An invoice now deletes any standalone payment-intent row for the same
+    payment, so a replay is the cleanup. Genuine one-off sales are untouched.
+
+    Reported from production against 0.5.0.
+
 ## 0.5.0
 
 ### Changed

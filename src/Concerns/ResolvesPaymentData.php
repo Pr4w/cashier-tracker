@@ -83,6 +83,59 @@ trait ResolvesPaymentData
                 $this->resolveBillable($invoice['customer'] ?? null) ?? []
             )
         );
+
+        $this->discardPaymentIntentRowFor($paymentIntentId);
+    }
+
+    /**
+     * Drop a standalone row for the payment intent that settled this invoice.
+     *
+     * Webhook order is not guaranteed, so payment_intent.succeeded may have
+     * arrived first and been recorded before any invoice existed to recognise
+     * it. The invoice always wins: it holds strictly more information.
+     *
+     * This also makes a backfill replay clean up rows written before the
+     * duplicate was fixed — no separate cleanup command needed.
+     */
+    protected function discardPaymentIntentRowFor(?string $paymentIntentId): void
+    {
+        if (! $paymentIntentId) {
+            return;
+        }
+
+        ($this->paymentModel())::query()
+            ->where('type', 'payment_intent')
+            ->where('stripe_payment_intent_id', $paymentIntentId)
+            ->delete();
+    }
+
+    /**
+     * Whether this payment intent settled an invoice that is tracked
+     * separately.
+     *
+     * The Basil API (2025-03-31, the one Cashier 16 pins) removed
+     * PaymentIntent.invoice, along with Charge.invoice. Nothing on a payment
+     * intent points at an invoice any more — the relation is only navigable
+     * the other way, through Invoice.payments — so retrieving the payment
+     * intent from Stripe would not answer this either.
+     *
+     * What does answer it is our own invoice row, which stores the payment
+     * intent id for exactly this kind of join.
+     */
+    protected function settlesAnInvoice(array $pi): bool
+    {
+        // Pre-Basil (Cashier 15 and older API versions): the field is still
+        // there and is authoritative, including when no invoice row exists.
+        if (! empty($pi['invoice'])) {
+            return true;
+        }
+
+        $id = $pi['id'] ?? null;
+
+        return $id !== null && ($this->paymentModel())::query()
+            ->where('type', 'invoice')
+            ->where('stripe_payment_intent_id', $id)
+            ->exists();
     }
 
     /**
@@ -94,10 +147,11 @@ trait ResolvesPaymentData
             return;
         }
 
-        // Skip payment intents that belong to an invoice: the invoice is the
-        // canonical record (it carries the tax breakdown) and is tracked
-        // separately. Recording both would double-count subscription revenue.
-        if (! empty($pi['invoice'])) {
+        // Skip payment intents that settled an invoice: the invoice is the
+        // canonical record (it carries tax, billing reason and period) and is
+        // tracked separately. Recording both double-counts subscription
+        // revenue.
+        if ($this->settlesAnInvoice($pi)) {
             return;
         }
 

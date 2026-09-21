@@ -51,9 +51,9 @@ php artisan migrate
 `config/cashier-tracker.php`:
 
 -   `source`: `invoices` (subscriptions, default), `payment_intents`
-    (one-off sales), or `both`. Under `both`, payment intents attached
-    to an invoice are skipped, so subscription revenue is never counted
-    twice.
+    (one-off sales), or `both`. Under `both`, a payment intent that settled
+    an invoice is skipped, so subscription revenue is never counted twice
+    (see "One payment, two webhooks" below).
 -   `resolve_fees_on_webhook`: resolve Stripe fees live, `true` by default.
     One Stripe API call per tracked payment. See "Fees" below.
 -   `reconcile_fees`: how often the package schedules its own missing-fee
@@ -211,6 +211,35 @@ Not covered: disputes and chargebacks (`charge.dispute.*`), which
 withdraw funds but are not refunds, and refund reversals (an async
 refund that later fails).
 
+## One payment, two webhooks
+
+A subscription charge fires both `invoice.payment_succeeded` and
+`payment_intent.succeeded` for the same movement of money. Only the invoice
+is recorded: it is the row carrying tax, billing reason and period.
+
+Recognising the pair is not as simple as it was. The Basil API (2025-03-31,
+which Cashier 16 pins) removed `PaymentIntent.invoice`, along with
+`Charge.invoice`. Nothing on a payment intent points at an invoice any more
+— the relation is only navigable the other way, through `Invoice.payments`
+— so retrieving the payment intent from Stripe would not answer it either.
+
+The package uses its own invoice row instead, which stores the payment
+intent id for exactly this join, and it works in both directions because
+webhook order is not guaranteed:
+
+-   A payment intent whose invoice is already recorded is skipped.
+-   An invoice that arrives second deletes the standalone payment-intent row
+    written before it.
+
+That second rule also means **replaying the backfill cleans up duplicates
+written by earlier versions** — no separate command:
+
+```bash
+php artisan cashier-tracker:backfill
+```
+
+Payment intents with no invoice, i.e. genuine one-off sales, are untouched.
+
 ## Fees
 
 Stripe does not put the fee in the webhook payload. It lives on the
@@ -343,6 +372,12 @@ accepts either form, so a green suite does not prove that constraint
 holds — don't fold the subtraction back in.
 
 ## Known limitations
+
+-   With `source` set to `payment_intents` alone, a subscription payment
+    intent cannot be told apart from a one-off sale on the Basil API: there
+    is no invoice row to recognise it by, and the payload carries nothing
+    that identifies one. It will be recorded. Use `invoices` or `both` if you
+    sell subscriptions.
 
 -   No currency conversion: a gross total adds up amounts across all
     currencies.

@@ -47,10 +47,12 @@ class WebhookListenerTest extends TestCase
     }
 
     #[Test]
-    public function it_skips_a_payment_intent_that_belongs_to_an_invoice(): void
+    public function it_skips_a_pre_basil_payment_intent_that_names_its_invoice(): void
     {
-        // The invoice is the canonical record; counting both would double the
-        // subscription revenue.
+        // Only the OLD API shape. Basil removed PaymentIntent.invoice, so this
+        // fixture does not resemble current traffic and proves nothing about
+        // it — SubscriptionDuplicateTest covers the shape Stripe actually
+        // sends today.
         $this->fire('payment_intent.succeeded', [
             'id' => 'pi_1', 'status' => 'succeeded', 'amount_received' => 1000,
             'currency' => 'eur', 'created' => 1767225600, 'invoice' => 'in_1',
