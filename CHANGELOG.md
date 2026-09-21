@@ -3,6 +3,23 @@
 Notable changes per release. This package is pre-1.0, so the minor segment
 carries breaking changes: `^0.2.0` will not pick up `0.3.0`.
 
+## 0.5.2
+
+### Fixed
+
+-   `--only-missing-fees` silently ignored every row without a
+    `stripe_payment_intent_id`, and then reported `0 fees resolved`. On an
+    installation predating the migration that added that column, that is most
+    of the table, and the message read as "nothing to do".
+
+    Those rows now have their payment intent id recovered first —
+    payment-intent rows locally, since their `stripe_id` is the payment intent
+    id, invoice rows by reading the invoice back from Stripe once — so the
+    weekly sweep no longer carries a permanent blind spot. Anything still
+    unrecoverable is reported, with the command to run.
+
+    Reported from production against 0.5.1.
+
 ## 0.5.1
 
 ### Fixed

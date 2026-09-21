@@ -86,7 +86,7 @@ php artisan cashier-tracker:backfill --only-missing-fees
 | Option | Effect |
 | --- | --- |
 | `--since=Y-m-d` | Only consider payments created on or after this date. Fails with a message if the date cannot be parsed, rather than silently importing everything. |
-| `--only-missing-fees` | Skip the Stripe listing entirely and re-resolve only rows whose `fee` is null. One API call per genuinely-missing fee, none otherwise. |
+| `--only-missing-fees` | Skip the Stripe listing entirely and re-resolve only rows whose `fee` is null. One API call per genuinely-missing fee, none otherwise. Rows with no `stripe_payment_intent_id` (written before that column existed) have their id recovered first, and any it cannot recover are reported rather than skipped in silence. |
 
 The backfill resolves Stripe fees and refunds through the path
 invoice → payments → payment_intent → charge → balance_transaction
@@ -327,6 +327,14 @@ The sweep only selects rows where `fee is null`, so a payment the webhook
 already resolved is never fetched again. On a healthy installation it
 matches nothing and makes no API calls at all — which is what makes it safe
 to leave running.
+
+It needs `stripe_payment_intent_id` to ask Stripe anything, and rows written
+before that column existed do not have one. Those are repaired first:
+payment-intent rows locally, since their `stripe_id` *is* the payment intent
+id, and invoice rows by reading the invoice back from Stripe once. Whatever
+still cannot be recovered is reported with the command to run, instead of
+being passed over silently — a sweep reporting `0 fees resolved` on a table
+full of missing fees is worse than useless.
 
 It is not the same command as a plain `backfill`, which re-lists everything
 from Stripe and re-resolves fees it already has. Reach for that (with

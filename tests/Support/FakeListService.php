@@ -20,6 +20,22 @@ class FakeListService
     {
     }
 
+    public int $retrieves = 0;
+
+    /** Retrieve one pre-canned row by id, as the real service does. */
+    public function retrieve($id, $params = null, $opts = null)
+    {
+        $this->retrieves++;
+
+        foreach ($this->rows as $row) {
+            if (($row['id'] ?? null) === $id) {
+                return \Stripe\Util\Util::convertToStripeObject($row, []);
+            }
+        }
+
+        throw new \RuntimeException("No such object: {$id}");
+    }
+
     public function all($params = null, $opts = null): Collection
     {
         $this->calls++;

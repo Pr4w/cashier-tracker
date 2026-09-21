@@ -162,10 +162,34 @@ class BackfillCommandTest extends TestCase
     }
 
     #[Test]
-    public function only_missing_fees_ignores_rows_with_no_payment_intent(): void
+    public function only_missing_fees_recovers_a_payment_intent_id_from_the_invoice(): void
     {
+        // Written before the migration that added the column. Without
+        // recovery these rows are invisible to the sweep forever.
         Payment::create([
-            'type' => 'invoice', 'stripe_id' => 'in_old', 'stripe_payment_intent_id' => null,
+            'type' => 'invoice', 'stripe_id' => 'in_1', 'stripe_payment_intent_id' => null,
+            'amount' => 2000, 'currency' => 'eur', 'livemode' => true, 'paid_at' => now(), 'fee' => null,
+        ]);
+
+        $stripe = $this->stripe(invoices: [$this->invoiceRow('in_1')], fee: 59);
+
+        $this->artisan('cashier-tracker:backfill', ['--only-missing-fees' => true])
+            ->expectsOutputToContain('1 payment intent id(s) recovered.')
+            ->expectsOutputToContain('1 fees resolved.')
+            ->assertSuccessful();
+
+        $payment = $this->payment('in_1');
+        $this->assertSame('pi_in_1', $payment->stripe_payment_intent_id);
+        $this->assertSame(59, $payment->fee);
+    }
+
+    #[Test]
+    public function a_legacy_payment_intent_row_is_recovered_without_an_api_call(): void
+    {
+        // For these rows stripe_id IS the payment intent id, so the column can
+        // be filled in locally.
+        Payment::create([
+            'type' => 'payment_intent', 'stripe_id' => 'pi_1', 'stripe_payment_intent_id' => null,
             'amount' => 2000, 'currency' => 'eur', 'livemode' => true, 'paid_at' => now(), 'fee' => null,
         ]);
 
@@ -173,6 +197,26 @@ class BackfillCommandTest extends TestCase
 
         $this->artisan('cashier-tracker:backfill', ['--only-missing-fees' => true])->assertSuccessful();
 
-        $this->assertSame(0, $stripe->paymentIntents->calls, 'nothing to join on');
+        $this->assertSame('pi_1', $this->payment('pi_1')->stripe_payment_intent_id);
+        $this->assertSame(0, $stripe->invoices->retrieves, 'no lookup needed for this shape');
+        $this->assertSame(59, $this->payment('pi_1')->fee);
+    }
+
+    #[Test]
+    public function rows_it_cannot_recover_are_reported_not_silently_skipped(): void
+    {
+        // Invoice gone from Stripe: unrecoverable. Saying nothing here is what
+        // made "0 fees resolved" read as "nothing to do".
+        Payment::create([
+            'type' => 'invoice', 'stripe_id' => 'in_vanished', 'stripe_payment_intent_id' => null,
+            'amount' => 2000, 'currency' => 'eur', 'livemode' => true, 'paid_at' => now(), 'fee' => null,
+        ]);
+
+        $this->stripe(fee: 59);
+
+        $this->artisan('cashier-tracker:backfill', ['--only-missing-fees' => true])
+            ->expectsOutputToContain('1 row(s) still have no payment intent id and were skipped.')
+            ->expectsOutputToContain('php artisan cashier-tracker:backfill')
+            ->assertSuccessful();
     }
 }

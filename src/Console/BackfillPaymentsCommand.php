@@ -4,6 +4,7 @@ namespace Pr4w\CashierTracker\Console;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Laravel\Cashier\Cashier;
 use Pr4w\CashierTracker\Concerns\ResolvesPaymentData;
 use Stripe\StripeClient;
@@ -167,6 +168,13 @@ class BackfillPaymentsCommand extends Command
     {
         $this->info('Resolving missing fees…');
 
+        // Rows written before the stripe_payment_intent_id migration have no
+        // join key, so the sweep cannot see them at all. Recover it first,
+        // otherwise they stay invisible to every future run.
+        if ($recovered = $this->recoverPaymentIntentIds($stripe, $since)) {
+            $this->line("  → {$recovered} payment intent id(s) recovered.");
+        }
+
         $query = ($this->paymentModel())::query()
             ->whereNull('fee')
             ->whereNotNull('stripe_payment_intent_id');
@@ -201,5 +209,66 @@ class BackfillPaymentsCommand extends Command
         });
 
         $this->line("  → {$resolved} fees resolved.");
+
+        $stranded = $this->scopeToSince(
+            ($this->paymentModel())::query()->whereNull('fee')->whereNull('stripe_payment_intent_id'),
+            $since
+        )->count();
+
+        if ($stranded) {
+            // Saying nothing here is what makes "0 fees resolved" misleading
+            // on a table full of missing fees.
+            $this->warn("  {$stranded} row(s) still have no payment intent id and were skipped.");
+            $this->line('  Their invoice could not be read back from Stripe. A full backfill rewrites them:');
+            $this->line('  php artisan cashier-tracker:backfill' . ($since ? ' --since=' . date('Y-m-d', $since) : ''));
+        }
+    }
+
+    /**
+     * Fill in stripe_payment_intent_id for rows predating the migration that
+     * introduced it, so the sweep stops skipping them silently.
+     *
+     * Payment-intent rows need no API call: their stripe_id is the payment
+     * intent id. Invoice rows are read back from Stripe once.
+     */
+    private function recoverPaymentIntentIds(StripeClient $stripe, ?int $since): int
+    {
+        $recovered = $this->scopeToSince(
+            ($this->paymentModel())::query()
+                ->whereNull('stripe_payment_intent_id')
+                ->where('type', 'payment_intent'),
+            $since
+        )->update(['stripe_payment_intent_id' => DB::raw('stripe_id')]);
+
+        $this->scopeToSince(
+            ($this->paymentModel())::query()
+                ->whereNull('stripe_payment_intent_id')
+                ->where('type', 'invoice'),
+            $since
+        )->chunkById(100, function ($payments) use ($stripe, &$recovered) {
+            foreach ($payments as $payment) {
+                try {
+                    $invoice = $stripe->invoices->retrieve($payment->stripe_id, [
+                        'expand' => ['payments'],
+                    ])->toArray();
+                } catch (\Throwable $e) {
+                    continue;
+                }
+
+                if ($id = $this->resolveInvoicePaymentIntentId($invoice)) {
+                    $payment->update(['stripe_payment_intent_id' => $id]);
+                    $recovered++;
+                }
+            }
+        });
+
+        return $recovered;
+    }
+
+    private function scopeToSince($query, ?int $since)
+    {
+        return $since
+            ? $query->where('paid_at', '>=', Carbon::createFromTimestamp($since, config('app.timezone') ?: 'UTC'))
+            : $query;
     }
 }
