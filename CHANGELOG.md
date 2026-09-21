@@ -3,6 +3,51 @@
 Notable changes per release. This package is pre-1.0, so the minor segment
 carries breaking changes: `^0.2.0` will not pick up `0.3.0`.
 
+## 0.4.1
+
+### Added
+
+-   The package now schedules `cashier-tracker:backfill --only-missing-fees`
+    itself, weekly by default (`reconcile_fees`,
+    `CASHIER_TRACKER_RECONCILE`). Nothing needs adding to the host app's
+    console routes. Set it to `'hourly'`, `'daily'`, `'monthly'`, or `false`
+    to schedule it yourself. Runs `withoutOverlapping()`.
+
+    This is the safety net for what live fee resolution cannot catch. It only
+    selects rows where `fee` is null, so it never re-fetches a fee the webhook
+    already resolved, and makes no API calls at all when nothing is missing.
+
+## 0.4.0
+
+### Added
+
+-   `cashier-tracker:backfill --only-missing-fees`: re-resolves only rows
+    whose `fee` is null, without listing anything from Stripe. One API call
+    per genuinely-missing fee, none otherwise.
+-   Failed charge lookups are logged at debug level and counted; the backfill
+    reports the total rather than failing silently.
+-   `LICENSE` and this changelog.
+
+### Changed
+
+-   `--since` fails with a clear message on an unparseable date. `strtotime()`
+    returns `false`, which is falsy, so a typo previously widened the run to
+    all of history.
+-   The payment-intent backfill reports imported and skipped separately. It
+    previously counted every row it saw as imported, though it skips
+    unsuccessful intents and any already billed by an invoice.
+-   The backfill uses `Cashier::stripe()` instead of building its own client,
+    inheriting Cashier's pinned Stripe API version.
+-   `resolveBillable()` is memoised per run, removing one database query per
+    payment during a backfill.
+-   Pagination lived once per endpoint; both backfills now share one
+    implementation.
+
+### Removed
+
+-   The `display_currency` config key, which nothing read.
+    `CASHIER_TRACKER_CURRENCY` no longer has any effect.
+
 ## 0.3.0
 
 ### Changed

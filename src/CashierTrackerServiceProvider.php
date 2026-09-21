@@ -2,6 +2,8 @@
 
 namespace Pr4w\CashierTracker;
 
+use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Facades\Event;
 use Laravel\Cashier\Events\WebhookReceived;
@@ -38,6 +40,41 @@ class CashierTrackerServiceProvider extends ServiceProvider
             $this->commands([
                 BackfillPaymentsCommand::class,
             ]);
+
+            $this->scheduleFeeReconciliation();
         }
+    }
+
+    /**
+     * Schedule the missing-fee sweep, so a host app gets it without wiring
+     * anything into its own console routes.
+     *
+     * Registered through app->booted(): the scheduler is not bound yet while
+     * providers are booting.
+     */
+    private function scheduleFeeReconciliation(): void
+    {
+        $frequency = config('cashier-tracker.reconcile_fees');
+
+        if (! $frequency) {
+            return;
+        }
+
+        if (! in_array($frequency, ['hourly', 'daily', 'weekly', 'monthly'], true)) {
+            Log::warning('[cashier-tracker] Ignoring unknown reconcile_fees frequency', [
+                'frequency' => $frequency,
+                'expected'  => 'hourly, daily, weekly, monthly, or false',
+            ]);
+
+            return;
+        }
+
+        $this->app->booted(function () use ($frequency) {
+            $this->app->make(Schedule::class)
+                ->command('cashier-tracker:backfill --only-missing-fees')
+                ->{$frequency}()
+                // It talks to Stripe; never let a slow run stack on itself.
+                ->withoutOverlapping();
+        });
     }
 }

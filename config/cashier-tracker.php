@@ -49,4 +49,26 @@ return [
     | resolved.
     */
     'resolve_fees_on_webhook' => env('CASHIER_TRACKER_RESOLVE_FEES', true),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Fee reconciliation schedule
+    |--------------------------------------------------------------------------
+    | The package schedules `cashier-tracker:backfill --only-missing-fees`
+    | itself, so there is nothing to add to the host app's console routes.
+    |
+    | This is the safety net for what live resolution cannot catch: a Stripe
+    | blip during the webhook, a webhook that never arrived, or a balance
+    | transaction that was not created yet. Without it those rows keep a null
+    | fee forever.
+    |
+    | It is close to free. The command queries local rows where `fee` is null
+    | and makes one Stripe call per row it finds — on a healthy installation,
+    | none at all. Weekly is plenty for low payment volume; raise it if you
+    | want gaps closed sooner.
+    |
+    | One of: 'hourly', 'daily', 'weekly', 'monthly', or false to disable and
+    | schedule it yourself.
+    */
+    'reconcile_fees' => env('CASHIER_TRACKER_RECONCILE', 'weekly'),
 ];

@@ -10,6 +10,8 @@ through the Stripe dashboard.
     side, replayable without creating duplicates).
 -   Resolves the net-of-tax amount, tax, Stripe fees and the true net.
 -   Tracks refunds, so reported revenue reflects money actually kept.
+-   Self-schedules a weekly sweep for any fee it could not resolve live, so
+    there is nothing to wire into the host app.
 -   Attaches each payment to the billable model (User) through an
     optional trait.
 
@@ -53,12 +55,15 @@ php artisan migrate
     to an invoice are skipped, so subscription revenue is never counted
     twice.
 -   `resolve_fees_on_webhook`: resolve Stripe fees live, `true` by default.
-    Costs one Stripe API call per tracked payment. See "Fees" below.
+    One Stripe API call per tracked payment. See "Fees" below.
+-   `reconcile_fees`: how often the package schedules its own missing-fee
+    sweep. `'weekly'` by default; `'hourly'`, `'daily'`, `'monthly'`, or
+    `false` to disable.
 -   `model`: the Payment model, overridable.
 -   `table`: table name.
 
 Environment overrides: `CASHIER_TRACKER_SOURCE`,
-`CASHIER_TRACKER_RESOLVE_FEES`.
+`CASHIER_TRACKER_RESOLVE_FEES`, `CASHIER_TRACKER_RECONCILE`.
 
 For a project that only sells subscriptions (the most common case),
 leave this on `invoices`.
@@ -256,28 +261,37 @@ $payment->hasResolvedFee()
 Payment::live()->missingFee()->count(); // how much is still outstanding
 ```
 
-### Recommended setup
+### The weekly sweep, scheduled for you
 
-Run both, because they cover different failures:
+**There is nothing to add to your app.** The package schedules
+`cashier-tracker:backfill --only-missing-fees` itself, weekly by default, as
+long as Laravel's scheduler is running.
 
 ```php
-// routes/console.php
-Schedule::command('cashier-tracker:backfill --only-missing-fees')->hourly();
+'reconcile_fees' => env('CASHIER_TRACKER_RECONCILE', 'weekly'),
 ```
 
-Live resolution (on by default) gets the fee right for essentially every
-payment, at one API call each — calls you would pay anyway. What it cannot
-cover is the exceptions: a Stripe blip during the webhook, a webhook that
-never arrived, a balance transaction that did not exist yet. Those rows keep
-a null fee forever unless something goes back for them.
+`'hourly'`, `'daily'`, `'weekly'`, `'monthly'`, or `false` to turn it off
+and schedule it yourself.
 
-The hourly sweep is that something, and it is close to free: it queries
-local rows where `fee is null` and makes one Stripe call per row it finds —
-usually none. It is not the same as a full backfill, which re-lists
-everything from Stripe and re-resolves fees it already has.
+The two mechanisms are not redundant, and they do not duplicate work. Per
+payment, exactly one Stripe request happens either way — the difference is
+*when*, and what each can recover from:
 
-Reach for a dated full backfill (`--since=...`) when you have changed how
-data is mapped and want history rewritten, not as routine maintenance.
+| | Covers | Cannot cover |
+| --- | --- | --- |
+| Live, on the webhook | Essentially every payment, immediately | Anything that failed: a Stripe blip, a webhook that never arrived, a balance transaction not yet created. Those rows keep a null fee forever. |
+| Weekly sweep | Exactly those leftovers | Making data fresher than its schedule |
+
+The sweep only selects rows where `fee is null`, so a payment the webhook
+already resolved is never fetched again. On a healthy installation it
+matches nothing and makes no API calls at all — which is what makes it safe
+to leave running.
+
+It is not the same command as a plain `backfill`, which re-lists everything
+from Stripe and re-resolves fees it already has. Reach for that (with
+`--since=...`) when you have changed how data is mapped and want history
+rewritten, not as routine maintenance.
 
 ## Verification
 

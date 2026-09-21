@@ -14,6 +14,9 @@ abstract class TestCase extends Orchestra
 {
     use RefreshDatabase;
 
+    /** Config applied during boot, for tests that need it set before providers run. */
+    protected array $overrideConfig = [];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -39,6 +42,10 @@ abstract class TestCase extends Orchestra
         // test that resolves fees would otherwise make a real Stripe call.
         // Tests that want live fees enable it and bind a fake client.
         $app['config']->set('cashier-tracker.resolve_fees_on_webhook', false);
+
+        foreach ($this->overrideConfig as $key => $value) {
+            $app['config']->set($key, $value);
+        }
     }
 
     protected function defineDatabaseMigrations(): void
