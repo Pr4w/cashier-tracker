@@ -34,6 +34,11 @@ abstract class TestCase extends Orchestra
         $app['config']->set('database.default', 'testing');
         $app['config']->set('cashier.secret', 'sk_test_fake');
         $app['config']->set('cashier-tracker.source', 'both');
+
+        // Explicit rather than inherited: the shipped default is true, and a
+        // test that resolves fees would otherwise make a real Stripe call.
+        // Tests that want live fees enable it and bind a fake client.
+        $app['config']->set('cashier-tracker.resolve_fees_on_webhook', false);
     }
 
     protected function defineDatabaseMigrations(): void

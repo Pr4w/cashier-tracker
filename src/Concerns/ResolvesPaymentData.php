@@ -156,6 +156,37 @@ trait ResolvesPaymentData
     }
 
     /**
+     * The Stripe client the webhook path should use, or null to skip fee
+     * resolution.
+     *
+     * On by default. The fee is not in the webhook payload: it lives on the
+     * charge's balance transaction, and Stripe never auto-expands nested
+     * objects in events, so fetching it is the only way to know it at
+     * webhook time.
+     *
+     * Cashier::stripe() rather than a hand-built client: it pins Cashier's
+     * own Stripe API version, and it resolves StripeClient through the
+     * container, so an application can bind its own instance.
+     *
+     * Never throws. Enabling fee resolution must not cost you the payment
+     * record itself: if the client cannot be built — no API key configured,
+     * for instance — this returns null and the payment is stored without a
+     * fee, exactly as it would be with the option off.
+     */
+    protected function webhookStripeClient(): ?StripeClient
+    {
+        if (! config('cashier-tracker.resolve_fees_on_webhook')) {
+            return null;
+        }
+
+        try {
+            return \Laravel\Cashier\Cashier::stripe();
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
      * The Stripe fee, omitted entirely when it could not be resolved. Same
      * reasoning as refundAttributes(): the webhook path passes no Stripe
      * client, so writing the key unconditionally would let a redelivered

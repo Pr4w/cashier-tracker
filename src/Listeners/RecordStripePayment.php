@@ -22,12 +22,12 @@ class RecordStripePayment
             }
 
             if ($type === 'invoice.payment_succeeded' && $this->tracksInvoices()) {
-                $this->storeInvoice($object);
+                $this->storeInvoice($object, $this->webhookStripeClient());
                 return;
             }
 
             if ($type === 'payment_intent.succeeded' && $this->tracksPaymentIntents()) {
-                $this->storePaymentIntent($object);
+                $this->storePaymentIntent($object, $this->webhookStripeClient());
                 return;
             }
 

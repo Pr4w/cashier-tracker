@@ -52,13 +52,15 @@ php artisan migrate
     (one-off sales), or `both`. Under `both`, payment intents attached
     to an invoice are skipped, so subscription revenue is never counted
     twice.
+-   `resolve_fees_on_webhook`: resolve Stripe fees live, `true` by default.
+    Costs one Stripe API call per tracked payment. See "Fees" below.
 -   `model`: the Payment model, overridable.
 -   `display_currency`: currency shown (indicative only; amounts are
     stored in cents).
 -   `table`: table name.
 
 Environment overrides: `CASHIER_TRACKER_SOURCE`,
-`CASHIER_TRACKER_CURRENCY`.
+`CASHIER_TRACKER_CURRENCY`, `CASHIER_TRACKER_RESOLVE_FEES`.
 
 For a project that only sells subscriptions (the most common case),
 leave this on `invoices`.
@@ -196,48 +198,65 @@ Not covered: disputes and chargebacks (`charge.dispute.*`), which
 withdraw funds but are not refunds, and refund reversals (an async
 refund that later fails).
 
-## Fees are backfill-only
+## Fees
 
-Resolving a fee costs one Stripe API call per payment
-(`paymentIntents->retrieve` expanding `latest_charge.balance_transaction`),
-so the webhook path deliberately skips it: a webhook should answer fast and
-not depend on a second Stripe round-trip. Only `cashier-tracker:backfill`
-resolves fees.
+Stripe does not put the fee in the webhook payload. It lives on the
+charge's **balance transaction**, which the event carries as a bare id, and
+Stripe never auto-expands nested objects in webhook events — "Objects sent
+in events are always in their minimal form". So the only way to know a fee
+at webhook time is to fetch it.
 
-The consequence is easy to miss. `net_amount` treats an unresolved fee as
+The package does that by default: `resolve_fees_on_webhook` is `true`, so
+each tracked payment costs one extra Stripe call
+(`paymentIntents->retrieve` expanding `latest_charge.balance_transaction`)
+inside the webhook request, and `fee` is correct immediately.
+
+```php
+// config/cashier-tracker.php
+'resolve_fees_on_webhook' => env('CASHIER_TRACKER_RESOLVE_FEES', true),
+```
+
+It degrades safely. If the call fails, Stripe is unreachable, or the client
+cannot even be built, the payment is still recorded with `fee = null` — the
+fee is written only when it was actually resolved, so nothing is lost and a
+later backfill fills it in.
+
+**Turn it off** (`CASHIER_TRACKER_RESOLVE_FEES=false`) if webhook latency
+matters more than live fees, or if you take payment methods whose balance
+transaction is not created synchronously. `cashier-tracker:backfill` then
+remains the way fees are resolved.
+
+### When the fee is unknown
+
+Whichever mode you are in, a fee can be missing — the option is off, the
+call failed, or the balance transaction did not exist yet. `net_amount`
+cannot tell "no fee" from "fee not known", and treats an unresolved fee as
 zero:
 
 ```php
 return $this->amount - ($this->fee ?? 0) - $this->refunded_amount;
 ```
 
-So on any row the backfill has not reached, **`net_amount` equals the gross
-amount and silently overstates net revenue** — by roughly 1.4% + EUR 0.25
-per payment on European card rates. `netPaid()` has the same behaviour via
-`COALESCE(SUM(fee), 0)`. Nothing about the figure looks wrong; the fee
-column simply reads as empty.
+So on such a row **`net_amount` equals the gross amount and overstates net
+revenue** — roughly 1.4% + EUR 0.25 per payment on European card rates.
+`netPaid()` behaves the same way via `COALESCE(SUM(fee), 0)`. Nothing looks
+wrong; the fee column simply reads as empty. Two helpers make it visible:
 
-Two things follow.
+```php
+$payment->hasResolvedFee()
+    ? money($payment->net_amount)
+    : '—';                              // not known yet, not zero
 
-**Schedule the backfill.** It is idempotent, so running it regularly is
-safe and is what keeps fees current:
+Payment::live()->missingFee()->count(); // how much is still outstanding
+```
+
+A scheduled backfill closes the gap for anything the live path missed. It
+is idempotent, so replaying it is safe:
 
 ```php
 // routes/console.php
 Schedule::command('cashier-tracker:backfill --since=' . now()->subWeek()->toDateString())
     ->dailyAt('04:00');
-```
-
-**Don't present an unresolved net as final.** `hasResolvedFee()` tells a
-caller whether the number is trustworthy, and `missingFee()` shows how much
-is outstanding:
-
-```php
-$payment->hasResolvedFee()
-    ? money($payment->net_amount)
-    : '—';                              // fee not known yet, not zero
-
-Payment::live()->missingFee()->count(); // how far behind the backfill is
 ```
 
 ## Verification
@@ -287,9 +306,9 @@ holds — don't fold the subtraction back in.
     app running a non-UTC timezone that has already moved to Carbon 3,
     rows written before this version were interpreted as UTC; replaying
     the backfill realigns the history.
--   Fees are only resolved during a backfill, so `net_amount` and
-    `netPaid()` overstate net revenue until one runs. See "Fees are
-    backfill-only" above. Refunds are not affected: they are tracked live.
+-   A fee can still be unknown (option off, call failed, balance
+    transaction not yet created), and `net_amount` / `netPaid()` then
+    overstate net revenue. See "Fees" above.
 -   Even during a backfill, fees are best-effort: `fee` stays `null` when
     the balance transaction cannot be retrieved.
 -   `net_amount` is an accessor: usable on a loaded model, but not in a
