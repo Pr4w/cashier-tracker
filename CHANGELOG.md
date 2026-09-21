@@ -3,6 +3,23 @@
 Notable changes per release. This package is pre-1.0, so the minor segment
 carries breaking changes: `^0.2.0` will not pick up `0.3.0`.
 
+## 0.5.0
+
+### Changed
+
+-   The scheduled fee sweep now runs **in production only** by default, via a
+    new `reconcile_environments` key (`['production']`). It previously ran in
+    every environment.
+
+    It makes outbound Stripe calls, and a staging or local environment
+    pointed at a copy of the production database with a test Stripe key would
+    retry every unresolved fee on every run and fail every time — noise and
+    pointless load.
+
+    If you were relying on it running outside production, set
+    `reconcile_environments` to `null` (everywhere) or list the environments
+    you want.
+
 ## 0.4.1
 
 ### Added

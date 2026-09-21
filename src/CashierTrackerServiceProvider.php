@@ -69,12 +69,21 @@ class CashierTrackerServiceProvider extends ServiceProvider
             return;
         }
 
-        $this->app->booted(function () use ($frequency) {
-            $this->app->make(Schedule::class)
+        $environments = config('cashier-tracker.reconcile_environments', ['production']);
+
+        $this->app->booted(function () use ($frequency, $environments) {
+            $event = $this->app->make(Schedule::class)
                 ->command('cashier-tracker:backfill --only-missing-fees')
                 ->{$frequency}()
                 // It talks to Stripe; never let a slow run stack on itself.
                 ->withoutOverlapping();
+
+            // Null means every environment. Otherwise keep it out of staging
+            // and local, where a test Stripe key against production-shaped
+            // data would just fail on every row, every run.
+            if ($environments !== null) {
+                $event->environments($environments);
+            }
         });
     }
 }

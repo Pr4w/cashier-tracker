@@ -59,6 +59,8 @@ php artisan migrate
 -   `reconcile_fees`: how often the package schedules its own missing-fee
     sweep. `'weekly'` by default; `'hourly'`, `'daily'`, `'monthly'`, or
     `false` to disable.
+-   `reconcile_environments`: environments that sweep runs in,
+    `['production']` by default. `null` to run everywhere.
 -   `model`: the Payment model, overridable.
 -   `table`: table name.
 
@@ -273,6 +275,15 @@ long as Laravel's scheduler is running.
 
 `'hourly'`, `'daily'`, `'weekly'`, `'monthly'`, or `false` to turn it off
 and schedule it yourself.
+
+It runs **in production only** by default, because it makes outbound Stripe
+calls: a staging or local environment pointed at a copy of the production
+database with a test Stripe key would retry every unresolved fee on every
+run and fail every time.
+
+```php
+'reconcile_environments' => ['production'],   // null to run everywhere
+```
 
 The two mechanisms are not redundant, and they do not duplicate work. Per
 payment, exactly one Stripe request happens either way — the difference is

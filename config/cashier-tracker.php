@@ -71,4 +71,17 @@ return [
     | schedule it yourself.
     */
     'reconcile_fees' => env('CASHIER_TRACKER_RECONCILE', 'weekly'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Environments the sweep runs in
+    |--------------------------------------------------------------------------
+    | Production only by default. The sweep makes outbound Stripe calls, and
+    | a staging or local environment pointed at a copy of the production
+    | database with a test Stripe key would retry every unresolved fee on
+    | every run and fail every time — noise, and pointless load.
+    |
+    | Set to null to run it everywhere, or list the environments yourself.
+    */
+    'reconcile_environments' => ['production'],
 ];

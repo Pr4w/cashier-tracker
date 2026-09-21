@@ -20,6 +20,13 @@ class ScheduleTest extends TestCase
         ));
     }
 
+    /** The scheduled sweep event itself. */
+    private function sweepEvent()
+    {
+        return collect($this->app->make(Schedule::class)->events())
+            ->first(fn ($e) => str_contains($e->command ?? '', 'cashier-tracker:backfill'));
+    }
+
     #[Test]
     public function the_shipped_default_is_weekly(): void
     {
@@ -92,5 +99,44 @@ class ScheduleTest extends TestCase
         $this->overrideConfig = $config;
 
         $this->refreshApplication();
+    }
+
+    #[Test]
+    public function the_sweep_is_production_only_by_default(): void
+    {
+        $config = require __DIR__ . '/../config/cashier-tracker.php';
+        $this->assertSame(['production'], $config['reconcile_environments']);
+
+        $event = $this->sweepEvent();
+
+        // It makes outbound Stripe calls; a staging box on a copy of the
+        // production database with a test key would fail every row, every run.
+        $this->assertTrue($event->runsInEnvironment('production'));
+        $this->assertFalse($event->runsInEnvironment('staging'));
+        $this->assertFalse($event->runsInEnvironment('local'));
+    }
+
+    #[Test]
+    public function the_environment_list_can_be_widened(): void
+    {
+        $this->refreshApplicationWith([
+            'cashier-tracker.reconcile_environments' => ['production', 'staging'],
+        ]);
+
+        $event = $this->sweepEvent();
+
+        $this->assertTrue($event->runsInEnvironment('staging'));
+        $this->assertFalse($event->runsInEnvironment('local'));
+    }
+
+    #[Test]
+    public function null_environments_means_everywhere(): void
+    {
+        $this->refreshApplicationWith(['cashier-tracker.reconcile_environments' => null]);
+
+        $event = $this->sweepEvent();
+
+        $this->assertTrue($event->runsInEnvironment('local'));
+        $this->assertTrue($event->runsInEnvironment('production'));
     }
 }
