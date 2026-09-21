@@ -11,6 +11,14 @@ class FakePaymentIntentService
 {
     public int $calls = 0;
 
+    /** Delegate for the list endpoint, so one property serves both uses. */
+    public ?FakeListService $list = null;
+
+    public function all($params = null, $opts = null)
+    {
+        return $this->list->all($params, $opts);
+    }
+
     public function __construct(
         private ?int $fee = null,
         private ?int $refunded = null,

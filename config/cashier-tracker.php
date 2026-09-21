@@ -49,14 +49,4 @@ return [
     | resolved.
     */
     'resolve_fees_on_webhook' => env('CASHIER_TRACKER_RESOLVE_FEES', true),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Currency normalisation
-    |--------------------------------------------------------------------------
-    | Amounts are always stored in the smallest currency unit (cents).
-    | This is only used as a display hint for the widget.
-    */
-    'display_currency' => env('CASHIER_TRACKER_CURRENCY', 'eur'),
-
 ];

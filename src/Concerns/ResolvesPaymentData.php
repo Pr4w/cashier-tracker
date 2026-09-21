@@ -7,6 +7,12 @@ use Stripe\StripeClient;
 
 trait ResolvesPaymentData
 {
+    /** Charge lookups that failed during this instance's lifetime. */
+    protected int $unresolvedCharges = 0;
+
+    /** Per-run memo for billable lookups, keyed by Stripe customer id. */
+    protected array $billableCache = [];
+
     protected function paymentModel(): string
     {
         return config('cashier-tracker.model', \Pr4w\CashierTracker\Models\Payment::class);
@@ -151,8 +157,27 @@ trait ResolvesPaymentData
                 'refunded' => $pi->latest_charge->amount_refunded ?? null,
             ];
         } catch (\Throwable $e) {
+            // Deliberately non-fatal, but not invisible: without this there is
+            // no way to tell a payment with no fee from one whose lookup failed.
+            \Illuminate\Support\Facades\Log::debug('[cashier-tracker] Could not resolve charge data', [
+                'payment_intent' => $paymentIntentId,
+                'message'        => $e->getMessage(),
+            ]);
+
+            $this->unresolvedCharges++;
+
             return $miss;
         }
+    }
+
+    /**
+     * How many charge lookups failed on this instance. The backfill reports
+     * it so a run that quietly resolved nothing is distinguishable from one
+     * that had nothing to resolve.
+     */
+    public function unresolvedCharges(): int
+    {
+        return $this->unresolvedCharges;
     }
 
     /**
@@ -283,8 +308,14 @@ trait ResolvesPaymentData
     /**
      * Extract the PaymentIntent id that settled an invoice, across API
      * versions. Recent Stripe API (Cashier 16) exposes it via the
-     * invoice.payments[].payment.payment_intent path; older versions
-     * exposed invoice.payment_intent or invoice.charge directly.
+     * invoice.payments[].payment.payment_intent path; older versions exposed
+     * a flat invoice.payment_intent.
+     *
+     * Only the first payment is read. An invoice settled by several payment
+     * intents — rare, and not something Cashier produces on its own — will
+     * therefore have the fee of its first payment only. There is no
+     * invoice.charge fallback: that field predates the versions this package
+     * supports.
      */
     protected function resolveInvoicePaymentIntentId(array $invoice): ?string
     {
@@ -318,22 +349,28 @@ trait ResolvesPaymentData
         return in_array(config('cashier-tracker.source'), ['payment_intents', 'both'], true);
     }
 
+    /**
+     * Memoised per instance: a backfill walks many payments belonging to the
+     * same handful of customers, and findBillable() is a database query each
+     * time. The webhook path builds a fresh listener per event, so nothing is
+     * cached across requests.
+     */
     protected function resolveBillable(?string $stripeCustomerId): ?array
     {
         if (! $stripeCustomerId) {
             return null;
         }
 
-        $billable = \Laravel\Cashier\Cashier::findBillable($stripeCustomerId);
-
-        if (! $billable) {
-            return null;
+        if (array_key_exists($stripeCustomerId, $this->billableCache)) {
+            return $this->billableCache[$stripeCustomerId];
         }
 
-        return [
+        $billable = \Laravel\Cashier\Cashier::findBillable($stripeCustomerId);
+
+        return $this->billableCache[$stripeCustomerId] = $billable ? [
             'billable_type' => $billable->getMorphClass(),
             'billable_id'   => $billable->getKey(),
-        ];
+        ] : null;
     }
 
     /**

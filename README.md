@@ -55,12 +55,10 @@ php artisan migrate
 -   `resolve_fees_on_webhook`: resolve Stripe fees live, `true` by default.
     Costs one Stripe API call per tracked payment. See "Fees" below.
 -   `model`: the Payment model, overridable.
--   `display_currency`: currency shown (indicative only; amounts are
-    stored in cents).
 -   `table`: table name.
 
 Environment overrides: `CASHIER_TRACKER_SOURCE`,
-`CASHIER_TRACKER_CURRENCY`, `CASHIER_TRACKER_RESOLVE_FEES`.
+`CASHIER_TRACKER_RESOLVE_FEES`.
 
 For a project that only sells subscriptions (the most common case),
 leave this on `invoices`.
@@ -73,7 +71,15 @@ php artisan cashier-tracker:backfill --since=2026-01-01
 
 # Full history
 php artisan cashier-tracker:backfill
+
+# Cheap sweep: only fill in fees that are still unknown
+php artisan cashier-tracker:backfill --only-missing-fees
 ```
+
+| Option | Effect |
+| --- | --- |
+| `--since=Y-m-d` | Only consider payments created on or after this date. Fails with a message if the date cannot be parsed, rather than silently importing everything. |
+| `--only-missing-fees` | Skip the Stripe listing entirely and re-resolve only rows whose `fee` is null. One API call per genuinely-missing fee, none otherwise. |
 
 The backfill resolves Stripe fees and refunds through the path
 invoice → payments → payment_intent → charge → balance_transaction
@@ -250,14 +256,28 @@ $payment->hasResolvedFee()
 Payment::live()->missingFee()->count(); // how much is still outstanding
 ```
 
-A scheduled backfill closes the gap for anything the live path missed. It
-is idempotent, so replaying it is safe:
+### Recommended setup
+
+Run both, because they cover different failures:
 
 ```php
 // routes/console.php
-Schedule::command('cashier-tracker:backfill --since=' . now()->subWeek()->toDateString())
-    ->dailyAt('04:00');
+Schedule::command('cashier-tracker:backfill --only-missing-fees')->hourly();
 ```
+
+Live resolution (on by default) gets the fee right for essentially every
+payment, at one API call each — calls you would pay anyway. What it cannot
+cover is the exceptions: a Stripe blip during the webhook, a webhook that
+never arrived, a balance transaction that did not exist yet. Those rows keep
+a null fee forever unless something goes back for them.
+
+The hourly sweep is that something, and it is close to free: it queries
+local rows where `fee is null` and makes one Stripe call per row it finds —
+usually none. It is not the same as a full backfill, which re-lists
+everything from Stripe and re-resolves fees it already has.
+
+Reach for a dated full backfill (`--since=...`) when you have changed how
+data is mapped and want history rewritten, not as routine maintenance.
 
 ## Verification
 

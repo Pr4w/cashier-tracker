@@ -3,6 +3,8 @@
 namespace Pr4w\CashierTracker\Console;
 
 use Illuminate\Console\Command;
+use Illuminate\Support\Carbon;
+use Laravel\Cashier\Cashier;
 use Pr4w\CashierTracker\Concerns\ResolvesPaymentData;
 use Stripe\StripeClient;
 
@@ -11,24 +13,40 @@ class BackfillPaymentsCommand extends Command
     use ResolvesPaymentData;
 
     protected $signature = 'cashier-tracker:backfill
-                            {--since= : Only import payments created after this date (Y-m-d)}';
+                            {--since= : Only consider payments created on or after this date (Y-m-d)}
+                            {--only-missing-fees : Skip the Stripe listing and only fill in fees that are still unknown}';
 
     protected $description = 'Backfill historical Stripe payments into the local tracker table.';
 
     public function handle(): int
     {
-        $stripe = new StripeClient(config('cashier.secret'));
+        try {
+            $since = $this->resolveSince();
+        } catch (\InvalidArgumentException $e) {
+            $this->error($e->getMessage());
 
-        $since = $this->option('since')
-            ? strtotime($this->option('since'))
-            : null;
-
-        if ($this->tracksInvoices()) {
-            $this->backfillInvoices($stripe, $since);
+            return self::INVALID;
         }
 
-        if ($this->tracksPaymentIntents()) {
-            $this->backfillPaymentIntents($stripe, $since);
+        // Cashier's factory rather than a hand-built client: it pins Cashier's
+        // own Stripe API version, which is what the payload shapes depend on.
+        $stripe = Cashier::stripe();
+
+        if ($this->option('only-missing-fees')) {
+            $this->reconcileMissingFees($stripe, $since);
+        } else {
+            if ($this->tracksInvoices()) {
+                $this->backfillInvoices($stripe, $since);
+            }
+
+            if ($this->tracksPaymentIntents()) {
+                $this->backfillPaymentIntents($stripe, $since);
+            }
+        }
+
+        if ($unresolved = $this->unresolvedCharges()) {
+            $this->warn("  {$unresolved} charge lookup(s) failed; those fees are still unknown.");
+            $this->line('  Re-run with --only-missing-fees to retry just those.');
         }
 
         $this->info('Backfill complete.');
@@ -36,59 +54,152 @@ class BackfillPaymentsCommand extends Command
         return self::SUCCESS;
     }
 
+    /**
+     * strtotime() returns false on unparseable input, which is falsy and would
+     * silently widen the run to all of history. Fail loudly instead.
+     */
+    private function resolveSince(): ?int
+    {
+        $since = $this->option('since');
+
+        if ($since === null || $since === '') {
+            return null;
+        }
+
+        $timestamp = strtotime($since);
+
+        if ($timestamp === false) {
+            throw new \InvalidArgumentException(
+                "Could not parse --since=\"{$since}\". Use a date such as 2026-01-01."
+            );
+        }
+
+        return $timestamp;
+    }
+
     private function backfillInvoices(StripeClient $stripe, ?int $since): void
     {
         $this->info('Backfilling invoices…');
-        $params = [
-            'status' => 'paid',
-            'limit'  => 100,
-            'expand' => ['data.payments', 'data.total_taxes'],
-        ];
 
-        if ($since) {
-            $params['created'] = ['gte' => $since];
-        }
+        $stored = $this->eachPage(
+            fn (array $params) => $stripe->invoices->all($params),
+            [
+                'status' => 'paid',
+                'expand' => ['data.payments', 'data.total_taxes'],
+            ],
+            $since,
+            function (array $invoice) use ($stripe): bool {
+                $this->storeInvoice($invoice, $stripe);
 
-        $count = 0;
-
-        do {
-            $invoices = $stripe->invoices->all($params);
-
-            foreach ($invoices->data as $invoice) {
-                $this->storeInvoice($invoice->toArray(), $stripe);
-                $count++;
+                return true;
             }
+        );
 
-            $last = end($invoices->data);
-            $params['starting_after'] = $last ? $last->id : null;
-        } while ($invoices->has_more && $params['starting_after']);
-
-        $this->line("  → {$count} invoices imported.");
+        $this->line("  → {$stored} invoices imported.");
     }
 
     private function backfillPaymentIntents(StripeClient $stripe, ?int $since): void
     {
         $this->info('Backfilling payment intents…');
-        $params = ['limit' => 100];
+
+        $seen   = 0;
+        $stored = $this->eachPage(
+            fn (array $params) => $stripe->paymentIntents->all($params),
+            [],
+            $since,
+            function (array $pi) use ($stripe, &$seen): bool {
+                $seen++;
+
+                // storePaymentIntent() skips unsuccessful intents and any that
+                // belong to an invoice, so "seen" and "stored" differ.
+                $before = ($this->paymentModel())::where('stripe_id', $pi['id'] ?? '')->exists();
+                $this->storePaymentIntent($pi, $stripe);
+
+                return $before || ($this->paymentModel())::where('stripe_id', $pi['id'] ?? '')->exists();
+            }
+        );
+
+        $skipped = $seen - $stored;
+        $this->line("  → {$stored} payment intents imported"
+            . ($skipped > 0 ? ", {$skipped} skipped (unsuccessful, or already billed by an invoice)." : '.'));
+    }
+
+    /**
+     * Walk a Stripe list endpoint page by page. Both backfills paginate
+     * identically; only the endpoint and what they do with each row differ.
+     *
+     * @param  callable(array): \Stripe\Collection  $fetch
+     * @param  callable(array): bool  $handle  returns whether the row was stored
+     */
+    private function eachPage(callable $fetch, array $params, ?int $since, callable $handle): int
+    {
+        $params['limit'] = 100;
 
         if ($since) {
             $params['created'] = ['gte' => $since];
         }
 
-        $count = 0;
+        $stored = 0;
 
         do {
-            $intents = $stripe->paymentIntents->all($params);
+            $page = $fetch($params);
 
-            foreach ($intents->data as $pi) {
-                $this->storePaymentIntent($pi->toArray(), $stripe);
-                $count++;
+            foreach ($page->data as $object) {
+                if ($handle($object->toArray())) {
+                    $stored++;
+                }
             }
 
-            $last = end($intents->data);
-            $params['starting_after'] = $last ? $last->id : null;
-        } while ($intents->has_more && $params['starting_after']);
+            $last = $page->data ? $page->data[count($page->data) - 1] : null;
+            $params['starting_after'] = $last?->id;
+        } while ($page->has_more && $params['starting_after']);
 
-        $this->line("  → {$count} payment intents processed.");
+        return $stored;
+    }
+
+    /**
+     * Fill in fees for rows that do not have one yet, without listing anything
+     * from Stripe. On a healthy installation this touches nothing, which makes
+     * it cheap enough to schedule: it costs one Stripe call per payment whose
+     * fee is genuinely missing, and none at all otherwise.
+     */
+    private function reconcileMissingFees(StripeClient $stripe, ?int $since): void
+    {
+        $this->info('Resolving missing fees…');
+
+        $query = ($this->paymentModel())::query()
+            ->whereNull('fee')
+            ->whereNotNull('stripe_payment_intent_id');
+
+        if ($since) {
+            $query->where('paid_at', '>=', Carbon::createFromTimestamp($since, config('app.timezone') ?: 'UTC'));
+        }
+
+        $resolved = 0;
+
+        // chunkById, not chunk: each update removes the row from the result
+        // set, which would make offset paging skip rows.
+        $query->chunkById(100, function ($payments) use ($stripe, &$resolved) {
+            foreach ($payments as $payment) {
+                $charge = $this->resolveChargeData($stripe, $payment->stripe_payment_intent_id);
+
+                $attributes = array_merge(
+                    $this->feeAttributes($charge['fee']),
+                    $this->refundAttributes($charge['refunded'], (int) $payment->amount)
+                );
+
+                if ($attributes === []) {
+                    continue;
+                }
+
+                $payment->update($attributes);
+
+                if ($charge['fee'] !== null) {
+                    $resolved++;
+                }
+            }
+        });
+
+        $this->line("  → {$resolved} fees resolved.");
     }
 }
