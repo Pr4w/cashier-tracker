@@ -56,7 +56,6 @@ trait ResolvesPaymentData
                 'amount'                   => $amount,
                 'subtotal'                 => $invoice['subtotal'] ?? null,
                 'tax'                      => $this->resolveInvoiceTax($invoice),
-                'fee'                      => $charge['fee'],
                 'currency'                 => $invoice['currency'] ?? 'eur',
                 'billing_reason'           => $invoice['billing_reason'] ?? null,
                 'livemode'                 => $invoice['livemode'] ?? true,
@@ -73,6 +72,7 @@ trait ResolvesPaymentData
                     'hosted_invoice' => $invoice['hosted_invoice_url'] ?? null,
                 ],
             ],
+                $this->feeAttributes($charge['fee']),
                 $this->refundAttributes($charge['refunded'], $amount),
                 $this->resolveBillable($invoice['customer'] ?? null) ?? []
             )
@@ -108,7 +108,6 @@ trait ResolvesPaymentData
                 'amount'                   => $amount,
                 'subtotal'                 => null,
                 'tax'                      => null,
-                'fee'                      => $charge['fee'],
                 'currency'                 => $pi['currency'] ?? 'eur',
                 'billing_reason'           => null,
                 'livemode'                 => $pi['livemode'] ?? true,
@@ -117,6 +116,7 @@ trait ResolvesPaymentData
                     'description' => $pi['description'] ?? null,
                 ],
             ],
+                $this->feeAttributes($charge['fee']),
                 $this->refundAttributes($charge['refunded'], $amount),
                 $this->resolveBillable($pi['customer'] ?? null) ?? []
             )
@@ -153,6 +153,22 @@ trait ResolvesPaymentData
         } catch (\Throwable $e) {
             return $miss;
         }
+    }
+
+    /**
+     * The Stripe fee, omitted entirely when it could not be resolved. Same
+     * reasoning as refundAttributes(): the webhook path passes no Stripe
+     * client, so writing the key unconditionally would let a redelivered
+     * payment webhook — or a backfill pass that hit an unreachable Stripe —
+     * null out a fee an earlier backfill had already resolved. Omitting the
+     * key leaves the stored value untouched and lets the column default
+     * apply on insert.
+     *
+     * @return array{fee?: int}
+     */
+    protected function feeAttributes(?int $fee): array
+    {
+        return $fee === null ? [] : ['fee' => $fee];
     }
 
     /**

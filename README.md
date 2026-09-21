@@ -118,6 +118,8 @@ the trait fills in history retroactively.
 -   `status`: `succeeded`, `partially_refunded`, or `refunded`.
 -   `scopeLive()`: excludes test payments (`livemode = false`).
 -   `scopePaidBetween($from, $to)`: filters on `paid_at`.
+-   `scopeMissingFee()`: rows a backfill has not resolved fees for yet.
+-   `hasResolvedFee()`: whether `fee` is known, as opposed to genuinely zero.
 -   `net_amount` (accessor, not stored): `amount - fee - refunded_amount`.
 -   `decimal_amount` (accessor): amount in the main currency unit.
 
@@ -170,9 +172,10 @@ php artisan migrate
 **Idempotency.** `amount_refunded` on the charge is cumulative across
 every refund, so it is assigned rather than incremented — a redelivered
 webhook re-applies the same total instead of double-counting. For the
-same reason, a redelivered *payment* webhook does not reset a refund:
-refund fields are only written when the refunded total was actually
-resolved.
+same reason, a redelivered *payment* webhook resets neither a refund nor
+a fee: those fields are written only when their value was actually
+resolved, so a webhook that cannot resolve them leaves the stored values
+alone.
 
 A refund for a payment that is not tracked (tracking enabled after the
 fact) is logged at debug level and ignored; the backfill picks it up.
@@ -192,6 +195,50 @@ Replaying the backfill therefore corrects refund history retroactively.
 Not covered: disputes and chargebacks (`charge.dispute.*`), which
 withdraw funds but are not refunds, and refund reversals (an async
 refund that later fails).
+
+## Fees are backfill-only
+
+Resolving a fee costs one Stripe API call per payment
+(`paymentIntents->retrieve` expanding `latest_charge.balance_transaction`),
+so the webhook path deliberately skips it: a webhook should answer fast and
+not depend on a second Stripe round-trip. Only `cashier-tracker:backfill`
+resolves fees.
+
+The consequence is easy to miss. `net_amount` treats an unresolved fee as
+zero:
+
+```php
+return $this->amount - ($this->fee ?? 0) - $this->refunded_amount;
+```
+
+So on any row the backfill has not reached, **`net_amount` equals the gross
+amount and silently overstates net revenue** — by roughly 1.4% + EUR 0.25
+per payment on European card rates. `netPaid()` has the same behaviour via
+`COALESCE(SUM(fee), 0)`. Nothing about the figure looks wrong; the fee
+column simply reads as empty.
+
+Two things follow.
+
+**Schedule the backfill.** It is idempotent, so running it regularly is
+safe and is what keeps fees current:
+
+```php
+// routes/console.php
+Schedule::command('cashier-tracker:backfill --since=' . now()->subWeek()->toDateString())
+    ->dailyAt('04:00');
+```
+
+**Don't present an unresolved net as final.** `hasResolvedFee()` tells a
+caller whether the number is trustworthy, and `missingFee()` shows how much
+is outstanding:
+
+```php
+$payment->hasResolvedFee()
+    ? money($payment->net_amount)
+    : '—';                              // fee not known yet, not zero
+
+Payment::live()->missingFee()->count(); // how far behind the backfill is
+```
 
 ## Verification
 
@@ -240,10 +287,9 @@ holds — don't fold the subtraction back in.
     app running a non-UTC timezone that has already moved to Carbon 3,
     rows written before this version were interpreted as UTC; replaying
     the backfill realigns the history.
--   Fees are only resolved during a backfill. The webhook path passes no
-    Stripe client, by design, to keep webhook handling fast and resilient,
-    so rows recorded live carry `fee = null` until a backfill fills them
-    in. Refunds are not affected: they are tracked live.
+-   Fees are only resolved during a backfill, so `net_amount` and
+    `netPaid()` overstate net revenue until one runs. See "Fees are
+    backfill-only" above. Refunds are not affected: they are tracked live.
 -   Even during a backfill, fees are best-effort: `fee` stays `null` when
     the balance transaction cannot be retrieved.
 -   `net_amount` is an accessor: usable on a loaded model, but not in a

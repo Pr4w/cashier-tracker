@@ -47,10 +47,37 @@ class Payment extends Model
 
     /**
      * True net: collected - Stripe fees - refunded.
+     *
+     * An unresolved fee counts as zero, so this OVERSTATES the net on any row
+     * the backfill has not reached — see hasResolvedFee(). Fees are only
+     * resolved during `cashier-tracker:backfill`; the webhook path records
+     * them as null by design.
      */
     public function getNetAmountAttribute(): int
     {
         return $this->amount - ($this->fee ?? 0) - $this->refunded_amount;
+    }
+
+    /**
+     * Whether the Stripe fee is known for this payment.
+     *
+     * Check this before presenting net_amount as a final figure: a row
+     * recorded live by the webhook carries no fee until a backfill pass
+     * reaches it, and net_amount cannot distinguish "no fee" from
+     * "fee not yet known".
+     */
+    public function hasResolvedFee(): bool
+    {
+        return $this->fee !== null;
+    }
+
+    /**
+     * Rows whose Stripe fee has not been resolved yet, i.e. what a backfill
+     * still has to fill in.
+     */
+    public function scopeMissingFee($query)
+    {
+        return $query->whereNull('fee');
     }
 
     /**

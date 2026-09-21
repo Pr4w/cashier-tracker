@@ -178,6 +178,48 @@ class RefundTest extends TestCase
     }
 
     #[Test]
+    public function a_redelivered_invoice_webhook_does_not_wipe_a_resolved_fee(): void
+    {
+        // Backfill resolves the fee...
+        $this->harness->storeInvoice($this->invoicePayload(), new FakeStripeClient(fee: 59, refunded: 0));
+        $this->assertSame(59, $this->payment()->fee);
+
+        // ...then Stripe redelivers the payment webhook, which carries no
+        // Stripe client and therefore cannot resolve a fee.
+        $this->harness->storeInvoice($this->invoicePayload());
+
+        $this->assertSame(59, $this->payment()->fee);
+    }
+
+    #[Test]
+    public function a_redelivered_payment_intent_webhook_does_not_wipe_a_resolved_fee(): void
+    {
+        $pi = [
+            'id' => 'pi_solo', 'status' => 'succeeded', 'amount_received' => 1000,
+            'currency' => 'eur', 'created' => 1767225600, 'livemode' => true,
+        ];
+
+        $this->harness->storePaymentIntent($pi, new FakeStripeClient(fee: 32, refunded: 0));
+        $this->assertSame(32, $this->payment('pi_solo')->fee);
+
+        $this->harness->storePaymentIntent($pi);
+
+        $this->assertSame(32, $this->payment('pi_solo')->fee);
+    }
+
+    #[Test]
+    public function a_failed_fee_lookup_during_backfill_does_not_wipe_a_known_fee(): void
+    {
+        $this->harness->storeInvoice($this->invoicePayload(), new FakeStripeClient(fee: 59, refunded: 0));
+
+        // Stripe unreachable on a later backfill pass: best-effort must mean
+        // "leave it alone", not "overwrite with null".
+        $this->harness->storeInvoice($this->invoicePayload(), new FakeStripeClient(fails: true));
+
+        $this->assertSame(59, $this->payment()->fee);
+    }
+
+    #[Test]
     public function the_webhook_path_leaves_the_fee_unresolved(): void
     {
         $this->harness->storeInvoice($this->invoicePayload());

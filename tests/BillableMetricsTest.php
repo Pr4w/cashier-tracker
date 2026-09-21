@@ -158,6 +158,36 @@ class BillableMetricsTest extends TestCase
     }
 
     #[Test]
+    public function has_resolved_fee_distinguishes_unknown_from_zero(): void
+    {
+        $this->assertFalse($this->pay(['fee' => null])->hasResolvedFee());
+        $this->assertTrue($this->pay(['fee' => 0])->hasResolvedFee());
+        $this->assertTrue($this->pay(['fee' => 59])->hasResolvedFee());
+    }
+
+    #[Test]
+    public function net_amount_overstates_while_the_fee_is_unresolved(): void
+    {
+        // Documents the known trade-off rather than endorsing it: net_amount
+        // cannot tell "no fee" from "fee not yet known", so it reads high
+        // until a backfill runs. hasResolvedFee() is how a caller tells.
+        $payment = $this->pay(['amount' => 1000, 'fee' => null]);
+
+        $this->assertSame(1000, $payment->net_amount);
+        $this->assertFalse($payment->hasResolvedFee());
+    }
+
+    #[Test]
+    public function the_missing_fee_scope_finds_what_a_backfill_still_owes(): void
+    {
+        $this->pay(['fee' => 59]);
+        $this->pay(['fee' => null]);
+        $this->pay(['fee' => null]);
+
+        $this->assertSame(2, Payment::missingFee()->count());
+    }
+
+    #[Test]
     public function decimal_amount_converts_out_of_cents(): void
     {
         $this->assertSame(19.99, $this->pay(['amount' => 1999])->decimal_amount);
